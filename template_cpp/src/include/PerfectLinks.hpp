@@ -34,6 +34,8 @@ public:
     void deliver();
     void stopDelivering();
 
+    int packetSize;
+
 private:
     int sockfd;  // The socket file descriptor used for communication
     sockaddr_in myAddr;  // The address of this process

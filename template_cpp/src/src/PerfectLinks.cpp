@@ -36,51 +36,47 @@ void PerfectLinks::startSending(const sockaddr_in &destAddr, int messageCount, i
 
 void PerfectLinks::sendWorker() {
     while (running) {
-        sockaddr_in destAddr;
-        std::string message;
-        int messageId;
-
+        std::vector<std::pair<sockaddr_in, std::pair<std::string, int>>> packet;
+        
         {
             std::lock_guard<std::mutex> lock(queueMutex);
-            if (messageQueue.empty()) {
-                return;  // No more messages to send
+            // Try to take N messages from the queue
+            for (int i = 0; i < packetSize && !messageQueue.empty(); ++i) {
+                packet.push_back(messageQueue.pop());
             }
-
-            auto task = messageQueue.front();
-            destAddr = task.first;
-            message = task.second.first;
-            messageId = task.second.second;
-
-            // Check if the message has already been acknowledged
-            {
-                std::lock_guard<std::mutex> ackLock(ackMutex);
-                if (acknowledgments.find(messageId) != acknowledgments.end() && acknowledgments[messageId]) {
-                    // Remove the acknowledged message from the queue
-                    messageQueue.pop();
-                    continue;
-                }
-            }
-
-            // Remove the message from the queue temporarily for sending
-            messageQueue.pop();
         }
 
-        // Send the message
-        ssize_t sent_bytes = sendto(sockfd, message.c_str(), message.size(), 0,
+        // If there are no messages to send, return
+        if (packet.empty()) {
+            return;
+        }
+
+        // Combine the messages into a single packet (this is just a conceptual packet for sending)
+        std::string combinedPacket;
+        for (const auto& msg : packet) {
+            combinedPacket += msg.second.first + ";"; // Add a delimiter to separate messages in the packet
+        }
+
+        // Send the packet
+        auto destAddr = packet[0].first;  // Assuming all messages in the packet are sent to the same destination
+        ssize_t sent_bytes = sendto(sockfd, combinedPacket.c_str(), combinedPacket.size(), 0,
                                     reinterpret_cast<const struct sockaddr*>(&destAddr), sizeof(destAddr));
         if (sent_bytes < 0) {
-            perror("sendto failed");
+            perror("sendto failed (packet)");
         } else {
-            // Use the correct process ID (myProcessId) for logging
-            std::cout << "Message sent: " << message << " from Process " << myProcessId << std::endl;
+            std::cout << "Packet sent: " << combinedPacket << std::endl;
         }
 
-        // Put the message back in the queue if not acknowledged yet
-        {
-            std::lock_guard<std::mutex> ackLock(ackMutex);
-            if (acknowledgments.find(messageId) == acknowledgments.end() || !acknowledgments[messageId]) {
-                std::lock_guard<std::mutex> queueLock(queueMutex);
-                messageQueue.emplace(destAddr, std::make_pair(message, messageId));
+        // After sending the packet, check for acknowledgments and requeue unacknowledged messages
+        for (const auto& msg : packet) {
+            int messageId = msg.second.second;
+            {
+                std::lock_guard<std::mutex> ackLock(ackMutex);
+                if (acknowledgments.find(messageId) == acknowledgments.end() || !acknowledgments[messageId]) {
+                    // Requeue the message if not acknowledged
+                    std::lock_guard<std::mutex> queueLock(queueMutex);
+                    messageQueue.push(msg);  // Put the message back in the queue
+                }
             }
         }
 
@@ -88,6 +84,7 @@ void PerfectLinks::sendWorker() {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 }
+
 
 void PerfectLinks::deliver() {
     char buffer[1024];
@@ -104,56 +101,62 @@ void PerfectLinks::deliver() {
         }
 
         buffer[len] = '\0';
-        std::string receivedMessage(buffer);
+        std::string receivedPacket(buffer);
 
-        // If it's an acknowledgment, mark it in the acknowledgments map
-        if (receivedMessage.rfind("ACK:", 0) == 0) {
-            // Parse the acknowledgment message
-            int ackNumber = std::stoi(receivedMessage.substr(4));
-            {
-                std::lock_guard<std::mutex> lock(ackMutex);
-                acknowledgments[ackNumber] = true;
-            }
-            ackCv.notify_all();
-            std::cout << "Acknowledgment received for Message ID: " << ackNumber << std::endl;
-        }
-        // Otherwise, it's a new message that we need to acknowledge and deliver
-        else {
-            // Parse the regular message format: "<senderId>:<messageId>:<messageContent>"
-            size_t firstColon = receivedMessage.find(':');
-            size_t secondColon = receivedMessage.find(':', firstColon + 1);
-
-            // Extract sender process ID and message ID
-            int senderProcessId = std::stoi(receivedMessage.substr(0, firstColon));
-            int messageId = std::stoi(receivedMessage.substr(firstColon + 1, secondColon - firstColon - 1));
-
-            // Check if the message has already been delivered (avoid duplication)
-            {
-                std::lock_guard<std::mutex> lock(deliveryMutex);
-                std::pair<int, int> msgPair = {senderProcessId, messageId};
-                if (deliveredMessages.find(msgPair) != deliveredMessages.end()) {
-                    // If the message is already delivered, skip logging and acknowledgment
-                    std::cout << "Duplicate message detected: Message ID " << messageId << " from Process " << senderProcessId << std::endl;
-                }else{
-                    // Mark the message as delivered
-                    deliveredMessages.insert(msgPair); 
-                    // Log the delivery of the message to the output file
-                    logDelivery(messageId, senderProcessId);  
+        // Split the packet into individual messages using the ';' delimiter (or your preferred delimiter)
+        std::istringstream packetStream(receivedPacket);
+        std::string message;
+        while (std::getline(packetStream, message, ';')) {
+            // If it's an acknowledgment, mark it in the acknowledgments map
+            if (message.rfind("ACK:", 0) == 0) {
+                int ackNumber = std::stoi(message.substr(4));
+                {
+                    std::lock_guard<std::mutex> lock(ackMutex);
+                    acknowledgments[ackNumber] = true;
                 }
+                ackCv.notify_all();
+                std::cout << "Acknowledgment received for Message ID: " << ackNumber << std::endl;
             }
+            // Otherwise, it's a new message that we need to acknowledge and deliver
+            else {
+                size_t firstColon = message.find(':');
+                size_t secondColon = message.find(':', firstColon + 1);
 
-            // Send acknowledgment back
-            std::string ackMessage = "ACK:" + std::to_string(messageId);
-            ssize_t sent_bytes = sendto(sockfd, ackMessage.c_str(), ackMessage.size(), 0,
-                                        reinterpret_cast<struct sockaddr*>(&srcAddr), sizeof(srcAddr));
-            if (sent_bytes < 0) {
-                perror("sendto failed (acknowledgment)");
-            } else {
-                std::cout << "Acknowledgment sent for Message ID " << messageId << " to Process " << senderProcessId << std::endl;
+                // Extract sender process ID and message ID
+                int senderProcessId = std::stoi(message.substr(0, firstColon));
+                int messageId = std::stoi(message.substr(firstColon + 1, secondColon - firstColon - 1));
+
+                std::cout << "Message received from Process " << senderProcessId << ": " << message << std::endl;
+
+                // Check if the message has already been delivered (avoid duplication)
+                {
+                    std::lock_guard<std::mutex> lock(deliveryMutex);
+                    std::pair<int, int> msgPair = {senderProcessId, messageId};
+                    if (deliveredMessages.find(msgPair) != deliveredMessages.end()) {
+                        // If the message is already delivered, skip logging and acknowledgment
+                        std::cout << "Duplicate message detected: Message ID " << messageId << " from Process " << senderProcessId << std::endl;
+                    } else {
+                        // Mark the message as delivered
+                        deliveredMessages.insert(msgPair);
+                        // Log the delivery of the message to the output file
+                        logDelivery(messageId, senderProcessId);
+                    }
+                }
+
+                // Send acknowledgment back
+                std::string ackMessage = "ACK:" + std::to_string(messageId);
+                ssize_t sent_bytes = sendto(sockfd, ackMessage.c_str(), ackMessage.size(), 0,
+                                            reinterpret_cast<struct sockaddr*>(&srcAddr), sizeof(srcAddr));
+                if (sent_bytes < 0) {
+                    perror("sendto failed (acknowledgment)");
+                } else {
+                    std::cout << "Acknowledgment sent for Message ID " << messageId << " to Process " << senderProcessId << std::endl;
+                }
             }
         }
     }
 }
+
 
 
 

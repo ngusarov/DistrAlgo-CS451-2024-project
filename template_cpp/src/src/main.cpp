@@ -96,8 +96,12 @@ int main(int argc, char **argv) {
         receiverAddr.sin_port = htons(hosts[receiverId - 1].port);
         inet_pton(AF_INET, "127.0.0.1", &receiverAddr.sin_addr); // Assuming localhost for simplicity
 
+        // Define the packet size (N), e.g., N = 3
+        pl.packetSize = 3;  // TODO adjust this number based on the optimal packet size
+
         // Start the thread pool for sending messages
         pl.startSending(receiverAddr, messageCount, static_cast<int>(receiverId));
+
 
         receiverThread.join(); // Keep listening for acks
     }
