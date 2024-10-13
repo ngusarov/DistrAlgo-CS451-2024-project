@@ -106,6 +106,7 @@ class Validation:
 
         return (hostsfile, configfile)
 
+
     def generateFifoConfig(self, directory):
         hostsfile = os.path.join(directory, "hosts")
         configfile = os.path.join(directory, "config")
@@ -118,8 +119,86 @@ class Validation:
             config.write("{}\n".format(self.messages))
 
         return (hostsfile, configfile)
+    
 
+    def validate_output(self, process_id, output_file, terminated_processes, global_broadcasted, global_delivered, errors):
+        if process_id in terminated_processes:
+            return
 
+        broadcast_count = 0  # To track the number of broadcasted messages
+
+        with open(output_file, "r") as f:
+            lines = f.readlines()
+
+        for line in lines:
+            line = line.strip()
+
+            # Check for broadcasted messages
+            if line.startswith("b "):  # Format is "b <message_id>"
+                parts = line.split()
+                msg_id = int(parts[1])
+                global_broadcasted.add((process_id, msg_id))  # Add process ID and message ID as a tuple
+                broadcast_count += 1  # Increment the broadcast count for this process
+
+            # Check for delivered messages
+            elif line.startswith("d "):  # Format is "d <sender_id> <message_id>"
+                parts = line.split()
+                sender_id = int(parts[1])
+                msg_id = int(parts[2])
+
+                # Ensure no duplicate delivery across processes
+                if (sender_id, msg_id) in global_delivered:
+                    errors["duplicated"] += 1
+                else:
+                    global_delivered.add((sender_id, msg_id))  # Track the sender and message ID
+
+        # Check if the process broadcasted fewer messages than expected
+        if process_id > 1 and broadcast_count < self.messages: # checking for broadcasters
+            errors["not_broadcasted"] += (self.messages - broadcast_count)
+
+    def validate_all_outputs(self, logsDir, processesInfo, processes):
+        # Dictionary to track error counts
+        errors = {
+            "not_broadcasted": 0,
+            "duplicated": 0,
+            "created_but_not_broadcasted": 0,
+            "broadcasted_but_not_delivered": 0
+        }
+
+        # Determine terminated processes
+        terminated_processes = {pid for pid, info in processesInfo.items() if info.state == ProcessState.TERMINATED}
+
+        # Initialize global sets for broadcasted and delivered messages
+        global_broadcasted = set()  # To track (process_id, message_id) tuples for broadcast messages
+        global_delivered = set()  # To track (sender_id, message_id) tuples for delivered messages
+
+        # Validate output for each process
+        for pid in range(1, processes + 1):
+            output_file = os.path.join(logsDir, f"proc{pid:02d}.output")
+            self.validate_output(pid, output_file, terminated_processes, global_broadcasted, global_delivered, errors)
+
+        # Ensure all broadcast messages were delivered correctly
+        self.validate_broadcast_delivery(global_broadcasted, global_delivered, terminated_processes, errors)
+
+        print()
+        print("Successfully validated the output.")
+
+        # Return the error dictionary instead of printing errors
+        return errors
+
+    def validate_broadcast_delivery(self, global_broadcasted, global_delivered, terminated_processes, errors):
+        """
+        Validate that all broadcast messages by non-terminated processes were delivered reliably.
+        """
+        # Ensure no message was delivered without being broadcasted
+        for sender_id, msg_id in global_delivered:
+            if (sender_id, msg_id) not in global_broadcasted and sender_id not in terminated_processes:
+                errors["created_but_not_broadcasted"] += 1
+
+        # Ensure all broadcasted messages were delivered
+        for process_id, msg_id in global_broadcasted:
+            if (process_id, msg_id) not in global_delivered and process_id not in terminated_processes:
+                errors["broadcasted_but_not_delivered"] += 1
 class LatticeAgreementValidation:
     def __init__(self, processes, proposals, max_proposal_size, distinct_values):
         self.procs = processes
@@ -355,6 +434,7 @@ def main(parser_results, testConfig):
         raise ValueError("Unrecognized command")
 
     try:
+        start_time = time.time()
         # Start the processes and get their PIDs
         procs = startProcesses(processes, runscript, hostsFile, configFiles, logsDir)
 
@@ -374,12 +454,14 @@ def main(parser_results, testConfig):
             )
 
         st.run()
+        finish_time = time.time()
+        curr_processesInfo = (st.processesInfo).copy()
         print("StressTest is complete.")
 
         print("Resuming stopped processes.")
         st.continueStoppedProcesses()
 
-        input("Press `Enter` when all processes have finished processing messages.")
+        # input("Press `Enter` when all processes have finished processing messages.")
 
         unterminated = st.remainingUnterminatedProcesses()
         if unterminated is not None:
@@ -406,6 +488,12 @@ def main(parser_results, testConfig):
         ]
         [p.start() for p in monitors]
         [p.join() for p in monitors]
+
+        # Validate the output files using the integrated Validation class
+        errors = validation.validate_all_outputs(logsDir, curr_processesInfo, st.processes)
+        print()
+        print("Errors: ", errors)
+        print("Time: ", finish_time - start_time)
 
     finally:
         if procs is not None:
@@ -498,5 +586,16 @@ if __name__ == "__main__":
             "TERM": 0.04,
         },
     }
+
+    # testConfig = {
+    #     "concurrency": 8,  # No threads interferring with the running processes
+    #     "attempts": 8,  # No interferring attempts
+    #     "attemptsDistribution": {  # No probability of interference
+    #         "STOP": 0.0,
+    #         "CONT": 1.0,
+    #         "TERM": 0.0,
+    #     },
+    # }
+
 
     main(results, testConfig)

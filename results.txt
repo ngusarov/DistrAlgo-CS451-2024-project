@@ -1,0 +1,28 @@
+1st stress test, MacBook
+
+testConfig = {
+    "concurrency": 8,  # How many threads are interferring with the running processes
+    "attempts": 8,  # How many interferring attempts each threads does
+    "attemptsDistribution": {  # Probability with which an interferring thread will
+        "STOP": 0.48,  # select an interferring action (make sure they add up to 1)
+        "CONT": 0.48,
+        "TERM": 0.04,
+    },
+}
+
+config = { # -------------------> and without it
+    'delay': ('200ms', '50ms'),
+    'loss': ('10%', '25%'),
+    'reordering': ('25%', '50%')
+}
+
+--processes 10 --messages 10048576
+Errors:  {'not_broadcasted': 47387861, 'duplicated': 0, 'created_but_not_broadcasted': 0, 'broadcasted_but_not_delivered': 2855019}
+Time:  5.242269039154053
+
+--processes 10 --messages 1048576
+Errors:  {'not_broadcasted': 2193799, 'duplicated': 0, 'created_but_not_broadcasted': 0, 'broadcasted_but_not_delivered': 3049081}
+Time:  7.269379138946533
+
+# ----------------------------------------------------------------------------------------------------------------------------------------
+
