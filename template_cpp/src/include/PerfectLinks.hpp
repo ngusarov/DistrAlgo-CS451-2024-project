@@ -2,7 +2,6 @@
 
 #include <unordered_set>     // For unordered_set
 #include <unordered_map>     // For unordered_map
-#include <set>               // For set (if needed)
 #include <queue>             // For queue
 #include <mutex>             // For mutex and lock_guard
 #include <condition_variable> // For condition_variable
@@ -14,7 +13,8 @@
 #include <iostream>          // For input/output streams (std::cout, std::endl)
 #include <fstream>           // For ofstream (log file)
 #include <functional>        // For std::hash (used in PairHash)
-#include <utility>           // For std::pair
+#include <utility>           // For std::pair>
+#include <sstream>           // For std::istringstream
 
 // Custom hash function for pairs of ints
 struct PairHash {
@@ -30,8 +30,10 @@ class PerfectLinks {
 public:
     PerfectLinks(int sockfd, const sockaddr_in &myAddr, std::ofstream& logFile, int myProcessId);
 
-    void startSending(const sockaddr_in &destAddr, int messageCount, int destProcessId);
-    void deliver();
+    void startSending(const sockaddr_in &destAddr, int messageCount);
+    void receiveMessages();          // Receiver logic: receive messages and send acknowledgments
+    void receiveAcknowledgments();   // Sender logic: receive acknowledgment messages
+    void startReceivingAcks();       // Start acknowledgment threads
     void stopDelivering();
 
     int packetSize;
@@ -54,11 +56,15 @@ private:
 
     // Thread management
     std::queue<std::pair<sockaddr_in, std::pair<std::string, int>>> messageQueue;  // Queue of messages to be sent
+    std::queue<std::pair<sockaddr_in, std::string>> ackQueue;  // Queue of acknowledgments to be sent
     std::mutex queueMutex;  // Mutex for accessing the message queue
+    std::mutex ackQueueMutex;  // Mutex for accessing the acknowledgment queue
     std::vector<std::thread> sendThreads;  // Thread pool for sending messages
+    std::vector<std::thread> ackThreads;   // Thread pool for sending acknowledgments
 
     // Function declarations
     void sendWorker();
-    void logBroadcast(int messageId, int processId);
+    void ackWorker();
+    void logBroadcast(int messageId);
     void logDelivery(int messageId, int processId);
 };

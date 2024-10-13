@@ -83,27 +83,29 @@ int main(int argc, char **argv) {
     // Initialize PerfectLinks with current process ID (myId) and log file
     PerfectLinks pl(sockfd, myAddr, logFile, static_cast<int>(myId));
 
-    // Step 4: Start the receiving thread for both sender and receiver
-    std::thread receiverThread(&PerfectLinks::deliver, &pl);
+    pl.packetSize = 3;  // Adjust this number based on the optimal packet size
 
     if (isReceiver) {
         // Receiver logic - run until all senders stop
+        std::thread receiverThread(&PerfectLinks::receiveMessages, &pl);
+
+        // Start threads to handle acknowledgment sending
+        std::thread ackThread(&PerfectLinks::startReceivingAcks, &pl);
+
         receiverThread.join(); // Keep the receiver running until terminated
+        ackThread.join(); // Keep acknowledgment threads running
     } else {
         // Sender logic
+        std::thread receiverThread(&PerfectLinks::receiveAcknowledgments, &pl);
+
         struct sockaddr_in receiverAddr = {};
         receiverAddr.sin_family = AF_INET;
         receiverAddr.sin_port = htons(hosts[receiverId - 1].port);
-        inet_pton(AF_INET, "127.0.0.1", &receiverAddr.sin_addr); // Assuming localhost for simplicity
+        inet_pton(AF_INET, "127.0.0.1", &receiverAddr.sin_addr);
 
-        // Define the packet size (N), e.g., N = 3
-        pl.packetSize = 3;  // TODO adjust this number based on the optimal packet size
+        pl.startSending(receiverAddr, messageCount);
 
-        // Start the thread pool for sending messages
-        pl.startSending(receiverAddr, messageCount, static_cast<int>(receiverId));
-
-
-        receiverThread.join(); // Keep listening for acks
+        receiverThread.join();  // Keep listening for acks
     }
 
     return 0;
