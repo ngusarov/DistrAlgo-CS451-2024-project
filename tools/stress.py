@@ -588,11 +588,11 @@ if __name__ == "__main__":
     }
 
     # testConfig = {
-    #     "concurrency": 8,  # No threads interferring with the running processes
-    #     "attempts": 8,  # No interferring attempts
+    #     "concurrency": 0,  # No threads interferring with the running processes
+    #     "attempts": 0,  # No interferring attempts
     #     "attemptsDistribution": {  # No probability of interference
     #         "STOP": 0.0,
-    #         "CONT": 1.0,
+    #         "CONT": 0.0,
     #         "TERM": 0.0,
     #     },
     # }

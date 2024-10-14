@@ -2,9 +2,10 @@
 
 #include <unordered_set>     // For unordered_set
 #include <unordered_map>     // For unordered_map
+#include <set>               // For set (if needed)
 #include <queue>             // For queue
 #include <mutex>             // For mutex and lock_guard
-#include <condition_variable> // For condition_variable
+#include <condition_variable>// For condition_variable
 #include <thread>            // For threads
 #include <atomic>            // For atomic<bool>
 #include <netinet/in.h>      // For sockaddr_in and related network functions
@@ -13,8 +14,9 @@
 #include <iostream>          // For input/output streams (std::cout, std::endl)
 #include <fstream>           // For ofstream (log file)
 #include <functional>        // For std::hash (used in PairHash)
-#include <utility>           // For std::pair>
-#include <sstream>           // For std::istringstream
+#include <utility>           // For std::pair
+#include <vector>            // For std::vector
+#include <string>            // For std::string
 
 // Custom hash function for pairs of ints
 struct PairHash {
@@ -31,12 +33,12 @@ public:
     PerfectLinks(int sockfd, const sockaddr_in &myAddr, std::ofstream& logFile, int myProcessId);
 
     void startSending(const sockaddr_in &destAddr, int messageCount);
-    void receiveMessages();          // Receiver logic: receive messages and send acknowledgments
-    void receiveAcknowledgments();   // Sender logic: receive acknowledgment messages
-    void startReceivingAcks();       // Start acknowledgment threads
-    void stopDelivering();
+    void receiveMessages();  // For the receiver to receive and log messages
+    void receiveAcknowledgments();  // For the sender to handle acknowledgment reception
+    void startSendingAcks();  // For the receiver to send acknowledgments
+    void stopDelivering();  // To stop receiving/sending
 
-    int packetSize;
+    int packetSize;  // Add packet size as a public member variable
 
 private:
     int sockfd;  // The socket file descriptor used for communication
@@ -46,7 +48,6 @@ private:
 
     // Mutex and condition variables for managing acknowledgment tracking
     std::mutex ackMutex;
-    std::condition_variable ackCv;
 
     // Data structures for storing state
     std::unordered_map<int, bool> acknowledgments;  // Keeps track of acknowledgments by message ID
@@ -54,17 +55,31 @@ private:
     std::mutex deliveryMutex;  // Protects the deliveredMessages set
     std::atomic<bool> running{true};  // Flag to indicate if the deliver thread should keep running
 
-    // Thread management
+    // Message queue management
     std::queue<std::pair<sockaddr_in, std::pair<std::string, int>>> messageQueue;  // Queue of messages to be sent
-    std::queue<std::pair<sockaddr_in, std::string>> ackQueue;  // Queue of acknowledgments to be sent
     std::mutex queueMutex;  // Mutex for accessing the message queue
-    std::mutex ackQueueMutex;  // Mutex for accessing the acknowledgment queue
+    std::condition_variable queueCv;  // Condition variable for notifying send threads about new messages
     std::vector<std::thread> sendThreads;  // Thread pool for sending messages
-    std::vector<std::thread> ackThreads;   // Thread pool for sending acknowledgments
+
+    // Acknowledgment queue management
+    std::queue<std::pair<sockaddr_in, std::string>> ackQueue;  // Queue for acknowledgments to be sent
+    std::mutex ackQueueMutex;  // Mutex for accessing the ackQueue
+    std::condition_variable ackCv;  // Condition variable for ack queue
+
+    // Separate logging queues for sender and receiver
+    std::queue<int> senderLogQueue;  // Queue for storing message IDs (sender)
+    std::queue<std::pair<int, int>> receiverLogQueue;  // Queue for storing <senderId, messageId> (receiver)
+    
+    std::mutex logMutex;  // Mutex for accessing the log queues
+    std::condition_variable logCv;  // Condition variable for notifying log thread about new logs
+    std::thread senderLogThread;  // Thread to handle sender logging
+    std::thread receiverLogThread;  // Thread to handle receiver logging
+
+    std::vector<std::thread> ackThreads;  // Thread pool for acknowledgment sending
 
     // Function declarations
     void sendWorker();
-    void ackWorker();
-    void logBroadcast(int messageId);
-    void logDelivery(int messageId, int processId);
+    void senderLogWorker();
+    void receiverLogWorker();
+    void ackWorker();  // Function to handle acknowledgment sending
 };

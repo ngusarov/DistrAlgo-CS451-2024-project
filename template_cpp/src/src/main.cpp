@@ -14,6 +14,8 @@ static void stop(int) {
 
     std::cout << "Immediately stopping network packet processing.\n";
     std::cout << "Writing output.\n";
+    // TODO flush here
+
     exit(0);
 }
 
@@ -90,7 +92,7 @@ int main(int argc, char **argv) {
         std::thread receiverThread(&PerfectLinks::receiveMessages, &pl);
 
         // Start threads to handle acknowledgment sending
-        std::thread ackThread(&PerfectLinks::startReceivingAcks, &pl);
+        std::thread ackThread(&PerfectLinks::startSendingAcks, &pl);
 
         receiverThread.join(); // Keep the receiver running until terminated
         ackThread.join(); // Keep acknowledgment threads running
