@@ -39,8 +39,9 @@ public:
     void stopDelivering();  // To stop receiving/sending
 
     int packetSize;  // Add packet size as a public member variable
+    bool isReceiver;
 
-private:
+public:
     int sockfd;  // The socket file descriptor used for communication
     sockaddr_in myAddr;  // The address of this process
     std::ofstream& logFile;  // Output file for logging
@@ -56,19 +57,19 @@ private:
     std::atomic<bool> running{true};  // Flag to indicate if the deliver thread should keep running
 
     // Message queue management
-    std::queue<std::pair<sockaddr_in, std::pair<std::string, int>>> messageQueue;  // Queue of messages to be sent
+    std::deque<std::pair<sockaddr_in, std::pair<std::string, int>>> messageQueue;  // Queue of messages to be sent
     std::mutex queueMutex;  // Mutex for accessing the message queue
     std::condition_variable queueCv;  // Condition variable for notifying send threads about new messages
     std::vector<std::thread> sendThreads;  // Thread pool for sending messages
 
     // Acknowledgment queue management
-    std::queue<std::pair<sockaddr_in, std::string>> ackQueue;  // Queue for acknowledgments to be sent
+    std::deque<std::tuple<sockaddr_in, int, int>> ackQueue;  // Queue for storing ack info (sockaddr_in, senderId, messageId)
     std::mutex ackQueueMutex;  // Mutex for accessing the ackQueue
     std::condition_variable ackCv;  // Condition variable for ack queue
 
     // Separate logging queues for sender and receiver
-    std::queue<int> senderLogQueue;  // Queue for storing message IDs (sender)
-    std::queue<std::pair<int, int>> receiverLogQueue;  // Queue for storing <senderId, messageId> (receiver)
+    std::deque<int> senderLogQueue;  // Queue for storing message IDs (sender)
+    std::deque<std::pair<int, int>> receiverLogQueue;  // Queue for storing <senderId, messageId> (receiver)
     
     std::mutex logMutex;  // Mutex for accessing the log queues
     std::condition_variable logCv;  // Condition variable for notifying log thread about new logs

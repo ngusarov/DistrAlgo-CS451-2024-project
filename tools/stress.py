@@ -198,6 +198,7 @@ class Validation:
         # Ensure all broadcasted messages were delivered
         for process_id, msg_id in global_broadcasted:
             if (process_id, msg_id) not in global_delivered and process_id not in terminated_processes:
+                print("broadcasted_but_not_delivered d", process_id, msg_id)
                 errors["broadcasted_but_not_delivered"] += 1
 class LatticeAgreementValidation:
     def __init__(self, processes, proposals, max_proposal_size, distinct_values):
@@ -461,7 +462,7 @@ def main(parser_results, testConfig):
         print("Resuming stopped processes.")
         st.continueStoppedProcesses()
 
-        # input("Press `Enter` when all processes have finished processing messages.")
+        input("Press `Enter` when all processes have finished processing messages.")
 
         unterminated = st.remainingUnterminatedProcesses()
         if unterminated is not None:
@@ -577,25 +578,25 @@ if __name__ == "__main__":
 
     results = parser.parse_args()
 
-    testConfig = {
-        "concurrency": 8,  # How many threads are interferring with the running processes
-        "attempts": 8,  # How many interferring attempts each threads does
-        "attemptsDistribution": {  # Probability with which an interferring thread will
-            "STOP": 0.48,  # select an interferring action (make sure they add up to 1)
-            "CONT": 0.48,
-            "TERM": 0.04,
-        },
-    }
-
     # testConfig = {
-    #     "concurrency": 0,  # No threads interferring with the running processes
-    #     "attempts": 0,  # No interferring attempts
-    #     "attemptsDistribution": {  # No probability of interference
-    #         "STOP": 0.0,
-    #         "CONT": 0.0,
-    #         "TERM": 0.0,
+    #     "concurrency": 8,  # How many threads are interferring with the running processes
+    #     "attempts": 8,  # How many interferring attempts each threads does
+    #     "attemptsDistribution": {  # Probability with which an interferring thread will
+    #         "STOP": 0.48,  # select an interferring action (make sure they add up to 1)
+    #         "CONT": 0.48,
+    #         "TERM": 0.04,
     #     },
     # }
+
+    testConfig = {
+        "concurrency": 0,  # No threads interferring with the running processes
+        "attempts": 0,  # No interferring attempts
+        "attemptsDistribution": {  # No probability of interference
+            "STOP": 0.0,
+            "CONT": 1.0,
+            "TERM": 0.0,
+        },
+    }
 
 
     main(results, testConfig)
