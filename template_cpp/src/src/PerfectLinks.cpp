@@ -64,30 +64,75 @@ void PerfectLinks::startSending(const sockaddr_in &destAddr, int messageCount) {
 }
 
 
-
 void PerfectLinks::sendWorker() {
     while (running) {
-        std::vector<std::pair<sockaddr_in, std::pair<std::string, int>>> packet;
+        // Local batch to hold extracted messages temporarily
+        std::vector<std::pair<sockaddr_in, std::pair<std::string, int>>> localBatch;
 
-        {
+        {   
             std::lock_guard<std::mutex> lock(queueMutex);
-            // std::lock_guard<std::mutex> queueLock(queueMutex);
-            // Try to take N messages from the queue
+            if (messageQueue.size() > 0) {
+                // Print two messages at the front
+                std::cout << "Message queue size: " << messageQueue.size() << " Front message";
+                auto it = messageQueue.begin();
+                for (int i = 0; i < 2 && it != messageQueue.end(); ++i, ++it) {
+                    std::cout << " ::" << it->second.second;
+                }
+                std::cout << " Back message ";
+                // Print two messages at the back
+                auto reverse_it = messageQueue.rbegin();
+                for (int i = 0; i < 2 && reverse_it != messageQueue.rend(); ++i, ++reverse_it) {
+                    std::cout << " ::" << reverse_it->second.second << std::endl;
+                }
+            } else {
+                std::cout << "Message queue is empty." << std::endl;
+            }
+            // Acquire lock and extract a batch of messages from the main queue
+            
             for (int i = 0; i < packetSize && !messageQueue.empty(); ++i) {
-                
                 const auto& msg = messageQueue.front();
                 messageQueue.pop_front();
-
-                int messageId = msg.second.second;
-                {
-                    std::lock_guard<std::mutex> ackLock(ackMutex);
-                    if (acknowledgments.find(messageId) == acknowledgments.end() || !acknowledgments[messageId]) {
-                        packet.push_back(msg);  // Put the message in the packet
-                    }
-                }
+                localBatch.push_back(msg);
             }
         }
 
+        if (localBatch.empty()) {
+            continue;
+        }
+
+        // Process the local batch and add unacknowledged messages back to the queue
+        std::vector<std::pair<sockaddr_in, std::pair<std::string, int>>> packet;
+
+        for (const auto& msg : localBatch) {
+            int messageId = msg.second.second;
+            bool isAcknowledged = false;
+
+            // Check acknowledgment status
+            {
+                std::lock_guard<std::mutex> ackLock(ackMutex);
+                if (acknowledgments.find(messageId) != acknowledgments.end() && acknowledgments[messageId]) {
+                    isAcknowledged = true;
+                }
+            }
+
+            if (!isAcknowledged) {
+                packet.push_back(msg);  // Add to the current packet for sending
+            } else {
+                // If acknowledged, we don't need to requeue it
+                continue;
+            }
+        }
+
+        {
+            // Requeue all unacknowledged messages immediately after checking acknowledgments
+            std::lock_guard<std::mutex> lock(queueMutex);
+            for (const auto& msg : localBatch) {
+                int messageId = msg.second.second;
+                if (acknowledgments.find(messageId) == acknowledgments.end() || !acknowledgments[messageId]) {
+                    messageQueue.push_back(msg);  // Put the message back in the queue
+                }
+            }
+        }
 
         if (packet.empty()) {
             continue;
@@ -95,9 +140,9 @@ void PerfectLinks::sendWorker() {
 
         // Combine the messages into a single packet
         std::string combinedPacket;
-        combinedPacket.reserve(16384);  // Reserve space for larger packets (e.g., 10 KB or more)
+        combinedPacket.reserve(16384);  // Reserve space for larger packets
         for (const auto& msg : packet) {
-            combinedPacket += msg.second.first + ";"; // Combine the messages with a delimiter
+            combinedPacket += msg.second.first + ";";  // Combine the messages with a delimiter
         }
 
         auto destAddr = packet[0].first;
@@ -108,40 +153,12 @@ void PerfectLinks::sendWorker() {
         } else {
             std::cout << "Packet sent: " << combinedPacket << std::endl;
         }
-
-        if (messageQueue.size() > 0) {
-            // Print two messages at the front
-            std::cout << "Message queue size: " << messageQueue.size() << " Front message";
-            auto it = messageQueue.begin();
-            for (int i = 0; i < 2 && it != messageQueue.end(); ++i, ++it) {
-                std::cout << " ::" << it->second.second;
-            }
-            std::cout << " Back message "
-            // Print two messages at the back
-            auto reverse_it = messageQueue.rbegin();
-            for (int i = 0; i < 2 && reverse_it != messageQueue.rend(); ++i, ++reverse_it) {
-                std::cout << " ::" << reverse_it->second.second << std::endl;
-            }
-        } else {
-            std::cout << "Message queue is empty." << std::endl;
-        }
-
-        {
-            std::lock_guard<std::mutex> queueLock(queueMutex);
-            // Requeue unacknowledged messages
-            for (const auto& msg : packet) {
-                int messageId = msg.second.second;
-                {
-                    std::lock_guard<std::mutex> ackLock(ackMutex);
-                    if (acknowledgments.find(messageId) == acknowledgments.end() || !acknowledgments[messageId]) {
-                        messageQueue.push_back(msg);  // Put the message back in the queue
-                    }
-                }
-            }
-        }
-
     }
 }
+
+
+
+
 
 
 void PerfectLinks::senderLogWorker() {
