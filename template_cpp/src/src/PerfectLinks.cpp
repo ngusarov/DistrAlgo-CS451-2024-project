@@ -219,56 +219,61 @@ void PerfectLinks::startSendingAcks() {
 
 void PerfectLinks::ackWorker() {
     while (running) {
-        std::vector<std::tuple<sockaddr_in, int, int>> ackPacket;
+        std::unordered_map<int, std::vector<std::tuple<sockaddr_in, int, int>>> ackPackets;
 
         {
             std::lock_guard<std::mutex> lock(ackQueueMutex);
-            for (int i = 0; i < packetSize && !ackQueue.empty(); ++i) {
-                auto ackTuple = ackQueue.front();
-                ackQueue.pop_front();
 
-                int senderProcessId = std::get<1>(ackTuple);
-                int messageId = std::get<2>(ackTuple);
+            // Process each queue of acks for each sender process
+            for (auto& [senderProcessId, ackQueue] : processAckQueues) {
+                std::vector<std::tuple<sockaddr_in, int, int>> ackPacket;
+                for (int i = 0; i < packetSize && !ackQueue.empty(); ++i) {
+                    auto ackTuple = ackQueue.front();
+                    ackQueue.pop_front();
 
-                std::pair<int, int> msgPair = {senderProcessId, messageId};
+                    int messageId = std::get<2>(ackTuple);
+                    std::pair<int, int> msgPair = {senderProcessId, messageId};
 
-                {
-                    std::lock_guard<std::mutex> deliveryLock(deliveryMutex);
+                    {
+                        std::lock_guard<std::mutex> deliveryLock(deliveryMutex);
 
-                    // Check if the message is in deliveredMessages before sending the acknowledgment
-                    if (deliveredMessages.find(msgPair) != deliveredMessages.end()) {
-                        // If the message is already delivered, include it in the acknowledgment packet
-                        ackPacket.push_back(ackTuple);
+                        // Only acknowledge if the message is delivered
+                        if (deliveredMessages.find(msgPair) != deliveredMessages.end()) {
+                            ackPacket.push_back(ackTuple);
 
-                        // For debugging purposes, print the acknowledgment and the corresponding message ID
-                        std::cout << "ACK: " << senderProcessId << ":"<< messageId << std::endl;
+                            // Debugging output
+                            std::cout << "ACK: " << senderProcessId << ":" << messageId << std::endl;
+                        }
                     }
+                }
+                if (!ackPacket.empty()) {
+                    ackPackets[senderProcessId] = ackPacket;  // Store the packet for this process
                 }
             }
         }
 
-        if (ackPacket.empty()) {
-            continue;
-        }
+        // Send acknowledgment packets for each process
+        for (const auto& [senderProcessId, ackPacket] : ackPackets) {
+            // Combine the acks into a single packet
+            std::string combinedAck;
+            combinedAck.reserve(16384);
+            for (const auto& ack : ackPacket) {
+                combinedAck += std::to_string(std::get<2>(ack)) + ";";  // Combine the message IDs
+            }
 
-        // Combine the acks into a single packet (only message IDs)
-        std::string combinedAck;
-        combinedAck.reserve(16384);
-
-        for (const auto& ack : ackPacket) {
-            combinedAck += std::to_string(std::get<2>(ack)) + ";";  // Combine the message IDs
-        }
-
-        auto destAddr = std::get<0>(ackPacket[0]);
-        ssize_t sent_bytes = sendto(sockfd, combinedAck.c_str(), combinedAck.size(), 0,
-                                    reinterpret_cast<const struct sockaddr*>(&destAddr), sizeof(destAddr));
-        if (sent_bytes < 0) {
-            perror("sendto failed (ack packet)");
-        } else {
-            std::cout << "ACK packet sent: " << combinedAck << std::endl;
+            // Send to the correct process address
+            auto destAddr = std::get<0>(ackPacket[0]);
+            ssize_t sent_bytes = sendto(sockfd, combinedAck.c_str(), combinedAck.size(), 0,
+                                        reinterpret_cast<const struct sockaddr*>(&destAddr), sizeof(destAddr));
+            if (sent_bytes < 0) {
+                perror("sendto failed (ack packet)");
+            } else {
+                std::cout << "ACK packet sent to Process " << senderProcessId << ": " << combinedAck << std::endl;
+            }
         }
     }
 }
+
 
 
 
@@ -319,11 +324,15 @@ void PerfectLinks::receiveMessages() {
                 }
             }
 
-            // Queue acknowledgment (including sockaddr_in, senderProcessId, and messageId)
+            // Queue acknowledgment (messageId only)
+            std::string ackMessage = std::to_string(messageId);
             {
                 std::lock_guard<std::mutex> ackQueueLock(ackQueueMutex);
-                ackQueue.push_back(std::make_tuple(srcAddr, senderProcessId, messageId));
+                
+                // Enqueue ack in the appropriate process queue based on senderProcessId
+                processAckQueues[senderProcessId].push_back(std::make_tuple(srcAddr, senderProcessId, messageId));
             }
+
         }
     }
 

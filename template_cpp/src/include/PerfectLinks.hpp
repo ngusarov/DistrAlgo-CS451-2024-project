@@ -63,7 +63,8 @@ public:
     std::vector<std::thread> sendThreads;  // Thread pool for sending messages
 
     // Acknowledgment queue management
-    std::deque<std::tuple<sockaddr_in, int, int>> ackQueue;  // Queue for storing ack info (sockaddr_in, senderId, messageId)
+    // Add the unordered_map to maintain ack queues for each process
+    std::unordered_map<int, std::deque<std::tuple<sockaddr_in, int, int>>> processAckQueues;
     std::mutex ackQueueMutex;  // Mutex for accessing the ackQueue
     std::condition_variable ackCv;  // Condition variable for ack queue
 
