@@ -109,8 +109,22 @@ void PerfectLinks::sendWorker() {
             std::cout << "Packet sent: " << combinedPacket << std::endl;
         }
 
-        const auto& msg = messageQueue.front();
-        std::cout << "Message queue: " << messageQueue.size() << " first left is " << msg.second.second << std::endl;
+        if (messageQueue.size() > 0) {
+            // Print two messages at the front
+            std::cout << "Message queue size: " << messageQueue.size() << " Front message";
+            auto it = messageQueue.begin();
+            for (int i = 0; i < 2 && it != messageQueue.end(); ++i, ++it) {
+                std::cout << " ::" << it->second.second;
+            }
+            std::cout << " Back message "
+            // Print two messages at the back
+            auto reverse_it = messageQueue.rbegin();
+            for (int i = 0; i < 2 && reverse_it != messageQueue.rend(); ++i, ++reverse_it) {
+                std::cout << " ::" << reverse_it->second.second << std::endl;
+            }
+        } else {
+            std::cout << "Message queue is empty." << std::endl;
+        }
 
         {
             std::lock_guard<std::mutex> queueLock(queueMutex);
@@ -120,7 +134,7 @@ void PerfectLinks::sendWorker() {
                 {
                     std::lock_guard<std::mutex> ackLock(ackMutex);
                     if (acknowledgments.find(messageId) == acknowledgments.end() || !acknowledgments[messageId]) {
-                    messageQueue.push_back(msg);  // Put the message back in the queue
+                        messageQueue.push_back(msg);  // Put the message back in the queue
                     }
                 }
             }
