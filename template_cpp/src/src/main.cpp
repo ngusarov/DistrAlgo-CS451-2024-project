@@ -24,7 +24,7 @@ static void stop(int) {
     if (pl != nullptr) {
         // Print deliveredMessages to a new file for testing purposes
         std::ofstream deliveredMessagesFile("deliveredMessages.txt");
-        if (deliveredMessagesFile.is_open()) {
+        if (deliveredMessagesFile.is_open() && pl->isReceiver) {
             std::lock_guard<std::mutex> lock(pl->deliveryMutex);  // Protect deliveredMessages
             for (const auto& msg : pl->deliveredMessages) {
                 deliveredMessagesFile << "d "

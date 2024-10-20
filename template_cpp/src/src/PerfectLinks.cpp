@@ -23,6 +23,7 @@ void PerfectLinks::startSending(const sockaddr_in &destAddr, int messageCount) {
         sendThreads.emplace_back(&PerfectLinks::sendWorker, this);
     }
 
+    doneLogging = false;
     // Main thread: Fill the message queue and enqueue logs while iterating
     for (int i = 1; i <= messageCount; ++i) {
         std::string message = std::to_string(myProcessId) + ":" + std::to_string(i);
@@ -43,6 +44,8 @@ void PerfectLinks::startSending(const sockaddr_in &destAddr, int messageCount) {
         // Notify one of the sending threads that a new message is available
         queueCv.notify_one();
     }
+
+    doneLogging = true;
 
     // Join all sender threads
     for (auto &thread : sendThreads) {
@@ -97,6 +100,7 @@ void PerfectLinks::sendWorker() {
         }
 
         if (localBatch.empty()) {
+            std::this_thread::sleep_for(std::chrono::nanoseconds(100));
             continue;
         }
 
@@ -105,36 +109,44 @@ void PerfectLinks::sendWorker() {
 
         for (const auto& msg : localBatch) {
             int messageId = msg.second.second;
-            bool isAcknowledged = false;
 
-            // Check acknowledgment status
-            {
+            {   
                 std::lock_guard<std::mutex> ackLock(ackMutex);
-                if (acknowledgments.find(messageId) != acknowledgments.end() && acknowledgments[messageId]) {
-                    isAcknowledged = true;
-                }
-            }
+                std::lock_guard<std::mutex> mmapLock(messageMapMutex);
+                auto search_number = messageMap.find(messageId);
 
-            if (!isAcknowledged) {
-                packet.push_back(msg);  // Add to the current packet for sending
-            } else {
-                // If acknowledged, we don't need to requeue it
-                continue;
-            }
-        }
+                if (auto search = acknowledgments.find(messageId); search != acknowledgments.end()) {
+                    
+                    if (search_number == messageMap.end()){
+                        std::cerr << "Detected acknowledged but unsent! ID: " << messageId << std::endl;
+                        continue;
+                    }
 
-        {
-            // Requeue all unacknowledged messages immediately after checking acknowledgments
-            std::lock_guard<std::mutex> lock(queueMutex);
-            for (const auto& msg : localBatch) {
-                int messageId = msg.second.second;
-                if (acknowledgments.find(messageId) == acknowledgments.end() || !acknowledgments[messageId]) {
+                    --messageMap[messageId];
+
+                    if (messageMap[messageId] <= 0){
+                        acknowledgments.erase(search);
+                        messageMap.erase(search_number);
+                        std::cout << "Message " << messageId << " removed fully" << " AckSize " << acknowledgments.size() << std::endl;
+                    }
+                }else{
+                    std::lock_guard<std::mutex> lock(queueMutex);
+
+                    if (search_number == messageMap.end()){
+                        messageMap[messageId] = 1;
+                    }
+                    // else{
+                    //     ++messageMap[messageId];
+                    // }
+                    packet.push_back(msg);
                     messageQueue.push_back(msg);  // Put the message back in the queue
                 }
             }
         }
 
+
         if (packet.empty()) {
+            std::this_thread::sleep_for(std::chrono::nanoseconds(100));
             continue;
         }
 
@@ -153,6 +165,8 @@ void PerfectLinks::sendWorker() {
         } else {
             std::cout << "Packet sent: " << combinedPacket << std::endl;
         }
+
+        // std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
 }
 
@@ -166,7 +180,7 @@ void PerfectLinks::senderLogWorker() {
 
     std::string logBatch;
 
-    while (running || !senderLogQueue.empty()) {
+    while (!doneLogging || !senderLogQueue.empty()) {
         {
             std::unique_lock<std::mutex> lock(logMutex);
             logCv.wait(lock, [&]() { return !senderLogQueue.empty() || !running; });
@@ -187,7 +201,84 @@ void PerfectLinks::senderLogWorker() {
             logBatch.clear();
         }
     }
+    
+    std::cerr << "Done with logging\n";
+
+    // // Start slowly iterating through the front 10% of the messageQueue
+    // while (running) {
+    //     std::unordered_set<int> initialBatchIds;
+    //     int tenPercentSize = 0;
+
+    //     {
+    //         // Lock only to calculate the 10% size and extract message IDs for analysis
+    //         std::lock_guard<std::mutex> queueLock(queueMutex);
+    //         tenPercentSize = static_cast<int>(messageQueue.size() * 0.1);
+    //         if (tenPercentSize > 0) {
+    //             // Record the IDs of the front 10% of messages for later comparison
+    //             for (int i = 0; i < tenPercentSize; ++i) {
+    //                 initialBatchIds.insert(messageQueue[static_cast<size_t>(i)].second.second);
+    //             }
+    //         }
+    //     }
+
+    //     // Analyze extracted messages outside the lock
+    //     std::unordered_set<int> messagesToDelete;
+
+    //     for (int messageId : initialBatchIds) {
+    //         bool shouldErase = false;
+
+    //         {
+    //             // Lock only for acknowledgment and message map check
+    //             std::lock_guard<std::mutex> ackLock(ackMutex);
+    //             std::lock_guard<std::mutex> mmapLock(messageMapMutex);
+
+    //             if (acknowledgments.find(messageId) != acknowledgments.end() && messageMap[messageId] == 1) {
+    //                 shouldErase = true;
+    //             }
+    //         }
+
+    //         if (shouldErase) {
+    //             // Mark the message ID for deletion
+    //             messagesToDelete.insert(messageId);
+    //         }
+    //     }
+
+    //     {
+    //         // Lock again to find and delete the messages based on their shifted positions
+    //         std::lock_guard<std::mutex> queueLock(queueMutex);
+    //         std::lock_guard<std::mutex> ackLock(ackMutex);
+    //         std::lock_guard<std::mutex> mmapLock(messageMapMutex);
+
+    //         // Iterate through the queue to find elements in the recorded initial batch
+    //         for (auto it = messageQueue.begin(); it != messageQueue.end(); ++it) {
+    //             int currentMessageId = it->second.second;
+
+    //             // If the current element is not in the initial batch, stop the iteration
+    //             if (initialBatchIds.find(currentMessageId) == initialBatchIds.end()) {
+    //                 break;
+    //             }
+
+    //             // If the current element should be deleted, erase it from all structures
+    //             if (messagesToDelete.find(currentMessageId) != messagesToDelete.end()) {
+    //                 it = messageQueue.erase(it);
+    //                 acknowledgments.erase(currentMessageId);
+    //                 messageMap.erase(currentMessageId);
+
+    //                 // Log the removal
+    //                 std::cerr << "Message " << currentMessageId << " killed in queue" << " AckSize " << acknowledgments.size() << " QuSize " << messageQueue.size() << std::endl;
+
+    //                 // Adjust the iterator to avoid skipping elements
+    //                 --it;
+    //             }
+    //         }
+    //     }
+
+    //     // Pause briefly between iterations to avoid high CPU usage
+    //     std::this_thread::sleep_for(std::chrono::milliseconds(10000));
+    // }
 }
+
+
 
 
 void PerfectLinks::receiveAcknowledgments() {
@@ -214,10 +305,10 @@ void PerfectLinks::receiveAcknowledgments() {
             int ackNumber = std::stoi(ack);
             {
                 std::lock_guard<std::mutex> lock(ackMutex);
-                acknowledgments[ackNumber] = true;
+                acknowledgments.insert(ackNumber);
+                std::cout << "Ack ID: " << ackNumber << ";;" << " AckSize " << acknowledgments.size() << std::endl;
             }
             ackCv.notify_all();
-            std::cout << "Acknowledgment received for Message ID: " << ackNumber << ";;" << std::endl;
         }
     }
 }

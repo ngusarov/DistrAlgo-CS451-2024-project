@@ -41,6 +41,8 @@ public:
     int packetSize;  // Add packet size as a public member variable
     bool isReceiver;
 
+    bool doneLogging;
+
 public:
     int sockfd;  // The socket file descriptor used for communication
     sockaddr_in myAddr;  // The address of this process
@@ -51,10 +53,13 @@ public:
     std::mutex ackMutex;
 
     // Data structures for storing state
-    std::unordered_map<int, bool> acknowledgments;  // Keeps track of acknowledgments by message ID
+    std::unordered_set<int> acknowledgments;  // Keeps track of acknowledgment counters by message ID
     std::unordered_set<std::pair<int, int>, PairHash> deliveredMessages;  // Keeps track of delivered message pairs (processId, messageId)
     std::mutex deliveryMutex;  // Protects the deliveredMessages set
     std::atomic<bool> running{true};  // Flag to indicate if the deliver thread should keep running
+
+    std::unordered_map<int, int> messageMap;
+    std::mutex messageMapMutex;
 
     // Message queue management
     std::deque<std::pair<sockaddr_in, std::pair<std::string, int>>> messageQueue;  // Queue of messages to be sent
@@ -78,6 +83,12 @@ public:
     std::thread receiverLogThread;  // Thread to handle receiver logging
 
     std::vector<std::thread> ackThreads;  // Thread pool for acknowledgment sending
+
+    // std::unordered_set<int> allMessageIds;  // IDs of messages that are being tracked (sent but not yet acknowledged)
+    // // Mutex for protecting the access to allMessageIds
+    // std::mutex allMsgMutex;
+
+    // void performFaultCheck();
 
     // Function declarations
     void sendWorker();
