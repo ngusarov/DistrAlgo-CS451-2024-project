@@ -146,11 +146,34 @@ int main(int argc, char **argv) {
     myAddr.sin_port = htons(hosts[myId - 1].port);
     myAddr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(sockfd, reinterpret_cast<struct sockaddr*>(&myAddr), sizeof(myAddr)) < 0) {
-        perror("bind failed");
-        close(sockfd);
-        exit(EXIT_FAILURE);
+    std::cout << "Process " << myId << " binding to port " << ntohs(myAddr.sin_port) << std::endl;
+
+
+    // Try to bind with the port above 10000
+    int port = hosts[myId - 1].port;
+    if (port < 10000) {
+        port = 10000 + static_cast<int>(myId);  // Start with 10000 if the assigned port is too low
     }
+    int bind_attempts = 0;
+
+    while (bind(sockfd, reinterpret_cast<struct sockaddr*>(&myAddr), sizeof(myAddr)) < 0) {
+        perror("bind failed: trying next port");
+        bind_attempts++;
+        
+        if (bind_attempts > 100) {  // Limit the number of attempts
+            std::cerr << "Failed to bind after 100 attempts. Exiting." << std::endl;
+            close(sockfd);
+            exit(EXIT_FAILURE);
+        }
+
+        port++;  // Increment port and try again
+        myAddr.sin_port = htons(static_cast<uint16_t>(port));  // Update the port in the sockaddr_in struct
+    }
+
+    // Now update the hosts with the new port number
+    hosts[myId - 1].port = ntohs(myAddr.sin_port);  // Update the port in the hosts list
+
+    std::cout << "Updated hosts: Process " << myId << " is now using port " << ntohs(myAddr.sin_port) << std::endl;
 
     std::cout << "Socket bound to port " << ntohs(myAddr.sin_port) << std::endl;
 
