@@ -61,6 +61,12 @@ public:
     std::unordered_map<int, int> messageMap;
     std::mutex messageMapMutex;
 
+    std::unordered_set<int> toDeleteSet;  // Keeps track of fully acknowledged messages
+    std::mutex toDeleteMutex;
+
+    std::unordered_set<int> ackOfAckSet;
+    std::mutex ackOfAckMutex;
+
     // Message queue management
     std::deque<std::pair<sockaddr_in, std::pair<std::string, int>>> messageQueue;  // Queue of messages to be sent
     std::mutex queueMutex;  // Mutex for accessing the message queue

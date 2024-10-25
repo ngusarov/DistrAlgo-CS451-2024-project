@@ -113,33 +113,34 @@ void PerfectLinks::sendWorker() {
             {   
                 std::lock_guard<std::mutex> ackLock(ackMutex);
                 std::lock_guard<std::mutex> mmapLock(messageMapMutex);
-                auto search_number = messageMap.find(messageId);
+                std::lock_guard<std::mutex> toDeletelock(toDeleteMutex);
 
-                if (auto search = acknowledgments.find(messageId); search != acknowledgments.end()) {
+                auto search_delete = toDeleteSet.find(messageId);
+
+                if (search_delete != toDeleteSet.end()) {
                     
-                    if (search_number == messageMap.end()){
-                        std::cerr << "Detected acknowledged but unsent! ID: " << messageId << std::endl;
-                        continue;
-                    }
+                    toDeleteSet.erase(messageId);
+                    std::cout << "Met and deleted " << messageId  << " toDelSize " << toDeleteSet.size() << std::endl;
 
-                    --messageMap[messageId];
-
-                    if (messageMap[messageId] <= 0){
-                        acknowledgments.erase(search);
-                        messageMap.erase(search_number);
-                        std::cout << "Message " << messageId << " removed fully" << " AckSize " << acknowledgments.size() << std::endl;
-                    }
-                }else{
+                }else if (auto search = acknowledgments.find(messageId); search == acknowledgments.end()){ // never acknowledged before
                     std::lock_guard<std::mutex> lock(queueMutex);
 
-                    if (search_number == messageMap.end()){
-                        messageMap[messageId] = 1;
+                    if (auto search_number = messageMap.find(messageId); search_number == messageMap.end()){
+                        messageMap[messageId] = 1; // sending 1st time
                     }
-                    // else{
-                    //     ++messageMap[messageId];
-                    // }
+                    else{
+                        ++messageMap[messageId]; // sending extra time, counting it
+                    }
                     packet.push_back(msg);
                     messageQueue.push_back(msg);  // Put the message back in the queue
+
+                    std::cout << "Mess " << messageId  << " will be sent " << messageMap[messageId] << " times already" << std::endl;
+                }else{
+                    std::lock_guard<std::mutex> ackOfAckLock(ackOfAckMutex);
+                    // in acknowledgments but not in toDelete yet
+                    // just waiting for all the msgs==messageId to get back from "en-route"
+                    ackOfAckSet.insert(messageId);  // Put the message as not-in-queue anymore
+                    std::cout << "Mess " << messageId  << " is excluded from the queue. Sent " << messageMap[messageId] << " times already" << std::endl;
                 }
             }
         }
@@ -306,6 +307,30 @@ void PerfectLinks::receiveAcknowledgments() {
             {
                 std::lock_guard<std::mutex> lock(ackMutex);
                 acknowledgments.insert(ackNumber);
+                --messageMap[ackNumber];
+
+                std::cout << "Mess " << ackNumber  << " is enroute " << messageMap[ackNumber] << " times still" << std::endl;
+
+                if (messageMap[ackNumber] <= 0){
+
+                    auto search = acknowledgments.find(ackNumber);
+                    auto search_number = messageMap.find(ackNumber);
+                    
+                    acknowledgments.erase(search);
+                    messageMap.erase(search_number);
+
+                    std::lock_guard<std::mutex> ackOfAckLock(ackOfAckMutex);
+
+                    if (auto search_ackofack = ackOfAckSet.find(ackNumber); search_ackofack != ackOfAckSet.end()){
+                        ackOfAckSet.erase(search_ackofack);
+                        std::cout << "Message " << ackNumber << " already not in queue, deleting..." << " AckSize " << acknowledgments.size() << std::endl;
+                    }else{
+                        std::lock_guard<std::mutex> toDeletelock(toDeleteMutex);
+                        toDeleteSet.insert(ackNumber);
+                        std::cout << "Message " << ackNumber << " marked as toDelete" << " AckSize " << acknowledgments.size() << std::endl;
+                    }
+                }
+
                 std::cout << "Ack ID: " << ackNumber << ";;" << " AckSize " << acknowledgments.size() << std::endl;
             }
             ackCv.notify_all();
