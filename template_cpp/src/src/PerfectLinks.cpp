@@ -30,14 +30,14 @@ void PerfectLinks::startSending(const sockaddr_in &destAddr, int messageCount) {
 
         // Enqueue the messageId for logging (for sender)
         {
-            std::lock_guard<std::mutex> logLock(logMutex);
+            std::unique_lock<std::mutex> logLock(logMutex);
             senderLogQueue.push_back(i);  // Log message ID only
         }
         // Notify the sender log thread that there's a new log entry
         logCv.notify_one();
 
         {
-            std::lock_guard<std::mutex> lock(queueMutex);
+            std::unique_lock<std::mutex> queueLock(queueMutex);
             messageQueue.emplace_back(destAddr, std::make_pair(message, i));
         }
 
@@ -56,7 +56,7 @@ void PerfectLinks::startSending(const sockaddr_in &destAddr, int messageCount) {
 
     // Stop the sender logging thread
     {
-        std::lock_guard<std::mutex> logLock(logMutex);
+        std::unique_lock<std::mutex> logLock(logMutex);
         running = false;
     }
     logCv.notify_all();  // Wake up the log thread if it's waiting
@@ -69,33 +69,26 @@ void PerfectLinks::startSending(const sockaddr_in &destAddr, int messageCount) {
 
 void PerfectLinks::sendWorker() {
     while (running) {
-        // Local batch to hold extracted messages temporarily
+        // Temporary batch for processing messages
         std::vector<std::pair<sockaddr_in, std::pair<std::string, int>>> localBatch;
+        std::unordered_set<int> toDeleteBatch;  // Collect IDs for deletion after sending
+        std::vector<std::pair<sockaddr_in, std::pair<std::string, int>>> unacknowledgedBatch; // To re-queue
 
         {   
-            std::lock_guard<std::mutex> lock(queueMutex);
-            if (messageQueue.size() > 0) {
-                // Print two messages at the front
-                std::cout << "Message queue size: " << messageQueue.size() << " Front message";
-                auto it = messageQueue.begin();
-                for (int i = 0; i < 2 && it != messageQueue.end(); ++i, ++it) {
-                    std::cout << " ::" << it->second.second;
-                }
-                std::cout << " Back message ";
-                // Print two messages at the back
-                auto reverse_it = messageQueue.rbegin();
-                for (int i = 0; i < 2 && reverse_it != messageQueue.rend(); ++i, ++reverse_it) {
-                    std::cout << " ::" << reverse_it->second.second << std::endl;
-                }
-            } else {
-                std::cout << "Message queue is empty." << std::endl;
-            }
-            // Acquire lock and extract a batch of messages from the main queue
-            
+            std::unique_lock<std::mutex> queueLock(this->queueMutex);
+
+            // Extract a batch for sending, skip marked for deletion
             for (int i = 0; i < packetSize && !messageQueue.empty(); ++i) {
-                const auto& msg = messageQueue.front();
-                messageQueue.pop_front();
-                localBatch.push_back(msg);
+                auto msg = messageQueue.front();
+                int messageId = msg.second.second;
+
+                if (toDeleteBatch.find(messageId) != toDeleteBatch.end()) {
+                    messageQueue.pop_front();
+                    continue;
+                }
+
+                messageQueue.pop_front();  // Temporarily remove message from queue
+                localBatch.push_back(msg);  // Add to local batch
             }
         }
 
@@ -104,57 +97,43 @@ void PerfectLinks::sendWorker() {
             continue;
         }
 
-        // Process the local batch and add unacknowledged messages back to the queue
+        // Prepare messages for resending
         std::vector<std::pair<sockaddr_in, std::pair<std::string, int>>> packet;
 
         for (const auto& msg : localBatch) {
             int messageId = msg.second.second;
 
             {   
-                std::lock_guard<std::mutex> ackLock(ackMutex);
-                std::lock_guard<std::mutex> mmapLock(messageMapMutex);
-                auto search_number = messageMap.find(messageId);
+                std::unique_lock<std::mutex> ackLock(this->ackMutex);
+                std::unique_lock<std::mutex> messageMapLock(this->messageMapMutex);
 
-                if (auto search = acknowledgments.find(messageId); search != acknowledgments.end()) {
-                    
-                    if (search_number == messageMap.end()){
-                        std::cerr << "Detected acknowledged but unsent! ID: " << messageId << std::endl;
-                        continue;
-                    }
-
+                if (acknowledgments.find(messageId) != acknowledgments.end()) {
                     --messageMap[messageId];
+                    if (messageMap[messageId] <= 0) {
+                        toDeleteBatch.insert(messageId);  // Mark message for deletion locally
+                        acknowledgments.erase(messageId);
+                        messageMap.erase(messageId);
+                        std::cout << "Message " << messageId << " marked for removal " << std::endl;
 
-                    if (messageMap[messageId] <= 0){
-                        acknowledgments.erase(search);
-                        messageMap.erase(search_number);
-                        std::cout << "Message " << messageId << " removed fully" << " AckSize " << acknowledgments.size() << std::endl;
                     }
-                }else{
-                    std::lock_guard<std::mutex> lock(queueMutex);
-
-                    if (search_number == messageMap.end()){
-                        messageMap[messageId] = 1;
-                    }
-                    // else{
-                    //     ++messageMap[messageId];
-                    // }
+                } else {
+                    // Message not acknowledged; add to packet and to re-queue list
                     packet.push_back(msg);
-                    messageQueue.push_back(msg);  // Put the message back in the queue
+                    unacknowledgedBatch.push_back(msg);  // Prepare to re-queue
                 }
             }
         }
-
 
         if (packet.empty()) {
             std::this_thread::sleep_for(std::chrono::nanoseconds(100));
             continue;
         }
 
-        // Combine the messages into a single packet
+        // Send combined packet
         std::string combinedPacket;
-        combinedPacket.reserve(16384);  // Reserve space for larger packets
+        combinedPacket.reserve(16384);
         for (const auto& msg : packet) {
-            combinedPacket += msg.second.first + ";";  // Combine the messages with a delimiter
+            combinedPacket += msg.second.first + ";";
         }
 
         auto destAddr = packet[0].first;
@@ -166,9 +145,28 @@ void PerfectLinks::sendWorker() {
             std::cout << "Packet sent: " << combinedPacket << std::endl;
         }
 
-        // std::this_thread::sleep_for(std::chrono::microseconds(100));
+        // Carefully remove messages marked for deletion from the queue
+        {
+            std::unique_lock<std::mutex> queueLock(this->queueMutex);
+
+            for (auto it = messageQueue.rbegin(); it != messageQueue.rend(); ) {
+                if (toDeleteBatch.find(it->second.second) != toDeleteBatch.end()) {
+                    it = std::deque<std::pair<sockaddr_in, std::pair<std::string, int>>>::reverse_iterator(
+                        messageQueue.erase(std::next(it).base()));
+                } else {
+                    ++it;
+                }
+            }
+
+            // Re-queue the unacknowledged messages
+            for (const auto& msg : unacknowledgedBatch) {
+                messageQueue.push_back(msg);
+            }
+        }
     }
 }
+
+
 
 
 
@@ -182,8 +180,8 @@ void PerfectLinks::senderLogWorker() {
 
     while (!doneLogging || !senderLogQueue.empty()) {
         {
-            std::unique_lock<std::mutex> lock(logMutex);
-            logCv.wait(lock, [&]() { return !senderLogQueue.empty() || !running; });
+            std::unique_lock<std::mutex> logLock(this->logMutex);
+            logCv.wait(logLock, [&]() { return !senderLogQueue.empty() || !running; });
 
             while (!senderLogQueue.empty() && logBatch.size() < batchSize) {
                 int messageId = senderLogQueue.front();
@@ -211,7 +209,7 @@ void PerfectLinks::senderLogWorker() {
 
     //     {
     //         // Lock only to calculate the 10% size and extract message IDs for analysis
-    //         std::lock_guard<std::mutex> queueLock(queueMutex);
+    //         std::unique_lock<std::mutex> queueLock(this->queueMutex);
     //         tenPercentSize = static_cast<int>(messageQueue.size() * 0.1);
     //         if (tenPercentSize > 0) {
     //             // Record the IDs of the front 10% of messages for later comparison
@@ -229,8 +227,8 @@ void PerfectLinks::senderLogWorker() {
 
     //         {
     //             // Lock only for acknowledgment and message map check
-    //             std::lock_guard<std::mutex> ackLock(ackMutex);
-    //             std::lock_guard<std::mutex> mmapLock(messageMapMutex);
+    //             std::unique_lock<std::mutex> ackLock(this->ackMutex);
+    //             std::unique_lock<std::mutex> messageMapLock(this->messageMapMutex);
 
     //             if (acknowledgments.find(messageId) != acknowledgments.end() && messageMap[messageId] == 1) {
     //                 shouldErase = true;
@@ -245,9 +243,9 @@ void PerfectLinks::senderLogWorker() {
 
     //     {
     //         // Lock again to find and delete the messages based on their shifted positions
-    //         std::lock_guard<std::mutex> queueLock(queueMutex);
-    //         std::lock_guard<std::mutex> ackLock(ackMutex);
-    //         std::lock_guard<std::mutex> mmapLock(messageMapMutex);
+    //         std::unique_lock<std::mutex> queueLock(this->queueMutex);
+    //         std::unique_lock<std::mutex> ackLock(this->ackMutex);
+    //         std::unique_lock<std::mutex> messageMapLock(this->messageMapMutex);
 
     //         // Iterate through the queue to find elements in the recorded initial batch
     //         for (auto it = messageQueue.begin(); it != messageQueue.end(); ++it) {
@@ -304,7 +302,7 @@ void PerfectLinks::receiveAcknowledgments() {
         while (std::getline(ackStream, ack, ';')) {
             int ackNumber = std::stoi(ack);
             {
-                std::lock_guard<std::mutex> lock(ackMutex);
+                std::unique_lock<std::mutex> ackLock(this->ackMutex);
                 acknowledgments.insert(ackNumber);
                 std::cout << "Ack ID: " << ackNumber << ";;" << " AckSize " << acknowledgments.size() << std::endl;
             }
@@ -344,7 +342,7 @@ void PerfectLinks::ackWorker() {
         std::unordered_map<int, std::vector<std::tuple<sockaddr_in, int, int>>> ackPackets;
 
         {
-            std::lock_guard<std::mutex> lock(ackQueueMutex);
+            std::unique_lock<std::mutex> ackQueueLock(this->ackQueueMutex);
 
             // Process each queue of acks for each sender process
             for (auto& [senderProcessId, ackQueue] : processAckQueues) {
@@ -357,7 +355,7 @@ void PerfectLinks::ackWorker() {
                     std::pair<int, int> msgPair = {senderProcessId, messageId};
 
                     {
-                        std::lock_guard<std::mutex> deliveryLock(deliveryMutex);
+                        std::unique_lock<std::mutex> deliveryLock(this->deliveryMutex);
 
                         // Only acknowledge if the message is delivered
                         if (deliveredMessages.find(msgPair) != deliveredMessages.end()) {
@@ -430,14 +428,14 @@ void PerfectLinks::receiveMessages() {
 
             // Check for duplication
             {
-                std::lock_guard<std::mutex> lock(deliveryMutex);
+                std::unique_lock<std::mutex> deliveryLock(this->deliveryMutex);
                 std::pair<int, int> msgPair = {senderProcessId, messageId};
                 if (deliveredMessages.find(msgPair) == deliveredMessages.end()) {
                     deliveredMessages.insert(msgPair);
 
                     // Add the log entry to the receiver logging queue with the senderId
                     {
-                        std::lock_guard<std::mutex> logLock(logMutex);
+                        std::unique_lock<std::mutex> logLock(this->logMutex);
                         receiverLogQueue.push_back(std::make_pair(senderProcessId, messageId));
                     }
 
@@ -449,7 +447,7 @@ void PerfectLinks::receiveMessages() {
             // Queue acknowledgment (messageId only)
             std::string ackMessage = std::to_string(messageId);
             {
-                std::lock_guard<std::mutex> ackQueueLock(ackQueueMutex);
+                std::unique_lock<std::mutex> ackQueueLock(this->ackQueueMutex);
                 
                 // Enqueue ack in the appropriate process queue based on senderProcessId
                 processAckQueues[senderProcessId].push_back(std::make_tuple(srcAddr, senderProcessId, messageId));
@@ -460,7 +458,7 @@ void PerfectLinks::receiveMessages() {
 
     // Stop the receiver logging thread
     {
-        std::lock_guard<std::mutex> logLock(logMutex);
+        std::unique_lock<std::mutex> logLock(this->logMutex);
         running = false;
     }
     logCv.notify_all();  // Wake up the log thread if it's waiting
@@ -479,8 +477,8 @@ void PerfectLinks::receiverLogWorker() {
 
     while (running || !receiverLogQueue.empty()) {
         {
-            std::unique_lock<std::mutex> lock(logMutex);
-            logCv.wait(lock, [&]() { return !receiverLogQueue.empty() || !running; });
+            std::unique_lock<std::mutex> logLock(this->logMutex);
+            logCv.wait(logLock, [&]() { return !receiverLogQueue.empty() || !running; });
 
             while (!receiverLogQueue.empty() && logBatch.size() < batchSize) {
                 auto logEntry = receiverLogQueue.front();

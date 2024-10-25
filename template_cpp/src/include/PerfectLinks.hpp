@@ -95,4 +95,5 @@ public:
     void senderLogWorker();
     void receiverLogWorker();
     void ackWorker();  // Function to handle acknowledgment sending
+    void deleteFromQueue(int messageId);
 };
