@@ -37,26 +37,62 @@ static void stop(int) {
         }
 
         // Flushing logs based on whether it's a sender or receiver
-        // std::lock_guard<std::mutex> logLock(pl->logMutex);
-        // pl->running = false;
+        std::lock_guard<std::mutex> logLock(pl->logMutex);
+        pl->running = false;
 
-        // // Notify the log thread to flush and stop
-        // pl->logCv.notify_all();
+        // Join the log threads and flush queues based on process type (sender/receiver)
+        if (pl->isReceiver) {
+            const size_t batchSize = 500;  // Increase batch size to handle larger volumes efficiently
+            std::string logBatch;
 
-        // // Join the log threads and flush queues based on process type (sender/receiver)
-        // if (pl->isReceiver) {
-        //     if (pl->receiverLogThread.joinable()) {
-        //         pl->receiverLogThread.join();
-        //     }
-        // } else {
-        //     if (pl->senderLogThread.joinable()) {
-        //         pl->senderLogThread.join();
-        //     }
-        // }
+            while (!pl->receiverLogQueue.empty()) {
+                {
+                    std::unique_lock<std::mutex> logLock(pl->logMutex);
+                    pl->logCv.wait(logLock, [&]() { return !pl->receiverLogQueue.empty(); });
 
-        // // Ensure the log file is properly flushed and closed
-        // pl->logFile.flush();
-        // pl->logFile.close();
+                    while (!pl->receiverLogQueue.empty() && logBatch.size() < batchSize) {
+                        auto logEntry = pl->receiverLogQueue.front();
+                        pl->receiverLogQueue.pop_front();
+
+                        // Accumulate log entries for delivery: "d <senderProcessId> <messageId>"
+                        logBatch += "d " + std::to_string(logEntry.first) + " " + std::to_string(logEntry.second) + "\n";
+                    }
+                }
+
+                // Write the entire batch to the log file in one operation
+                if (!logBatch.empty()) {
+                    pl->logFile << logBatch;
+                    pl->logFile.flush();  // Explicitly flush after writing the batch
+                    logBatch.clear();
+                }
+            }
+        } else {
+            const size_t batchSize = 500;  // Increase batch size to handle larger volumes efficiently
+
+            std::string logBatch;
+
+            while (!pl->doneLogging || !pl->senderLogQueue.empty()) {
+                {
+                    std::unique_lock<std::mutex> logLock(pl->logMutex);
+                    pl->logCv.wait(logLock, [&]() { return !pl->senderLogQueue.empty() || !pl->running; });
+
+                    while (!pl->senderLogQueue.empty() && logBatch.size() < batchSize) {
+                        int messageId = pl->senderLogQueue.front();
+                        pl->senderLogQueue.pop_front();
+
+                        // Accumulate log entries for broadcast
+                        logBatch += "b " + std::to_string(messageId) + "\n";
+                    }
+                }
+
+                // Write the entire batch to the log file in one operation
+                if (!logBatch.empty()) {
+                    pl->logFile << logBatch;
+                    pl->logFile.flush();  // Explicitly flush after writing the batch
+                    logBatch.clear();
+                }
+            }
+        }
     }
 
     exit(0);  // Exit the program
@@ -123,16 +159,16 @@ int main(int argc, char **argv) {
         perror("Failed to set SO_REUSEPORT");
     }
 
-    // Increase socket buffer sizes for sending and receiving
-    int rcvbuf_size = 16384; 
-    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf_size, sizeof(rcvbuf_size)) < 0) {
-        perror("Failed to set receive buffer size");
-    }
+    // // Increase socket buffer sizes for sending and receiving
+    // int rcvbuf_size = 16384; 
+    // if (setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf_size, sizeof(rcvbuf_size)) < 0) {
+    //     perror("Failed to set receive buffer size");
+    // }
 
-    int sndbuf_size = 16384;
-    if (setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &sndbuf_size, sizeof(sndbuf_size)) < 0) {
-        perror("Failed to set send buffer size");
-    }
+    // int sndbuf_size = 16384;
+    // if (setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &sndbuf_size, sizeof(sndbuf_size)) < 0) {
+    //     perror("Failed to set send buffer size");
+    // }
 
     // Optionally, set the socket to non-blocking mode
     int flags = fcntl(sockfd, F_GETFL, 0);
