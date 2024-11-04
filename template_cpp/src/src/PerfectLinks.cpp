@@ -72,7 +72,7 @@ void PerfectLinks::sendWorker() {
     while (running) {
         // Temporary batch for processing messages
         std::vector<int> localBatch;
-        std::unordered_set<int> toDeleteBatch;  // Collect IDs for deletion after sending
+        // std::unordered_set<int> toDeleteBatch;  // Collect IDs for deletion after sending
         std::vector<int> unacknowledgedBatch;    // To re-queue
 
         {   
@@ -82,10 +82,10 @@ void PerfectLinks::sendWorker() {
             for (int i = 0; i < packetSize && !messageQueue.empty(); ++i) {
                 int messageId = messageQueue.front();
                 
-                if (toDeleteBatch.find(messageId) != toDeleteBatch.end()) {
-                    messageQueue.pop_front();
-                    continue;
-                }
+                // if (toDeleteBatch.find(messageId) != toDeleteBatch.end()) {
+                //     messageQueue.pop_front();
+                //     continue;
+                // }
 
                 messageQueue.pop_front();  // Temporarily remove message from queue
                 localBatch.push_back(messageId);  // Add to local batch
@@ -108,14 +108,14 @@ void PerfectLinks::sendWorker() {
                 if (acknowledgments.find(messageId) != acknowledgments.end()) {
                     --messageMap[messageId];
                     if (messageMap[messageId] <= 0) {
-                        toDeleteBatch.insert(messageId);  // Mark message for deletion locally
+                        // toDeleteBatch.insert(messageId);  // Mark message for deletion locally
                         acknowledgments.erase(messageId);
                         messageMap.erase(messageId);
                         std::cout << "Message " << messageId << " marked for removal " << std::endl;
 
                     }
                 } else {
-                    // messageMap[messageId] = 1; // TODO do we need it here????
+                    messageMap[messageId] = 1; // TODO do we need it here????
                     // Message not acknowledged; add to packet and to re-queue list
                     packet.push_back(messageId);
                     unacknowledgedBatch.push_back(messageId);  // Prepare to re-queue
@@ -124,6 +124,7 @@ void PerfectLinks::sendWorker() {
         }
 
         if (packet.empty()) {
+            std::cout << "Nothing to send: chilling" << std::endl;
             std::this_thread::sleep_for(std::chrono::nanoseconds(100));
             continue;
         }
@@ -147,15 +148,15 @@ void PerfectLinks::sendWorker() {
         {
             std::unique_lock<std::mutex> queueLock(this->queueMutex);
 
-            for (auto it = messageQueue.rbegin(); it != messageQueue.rend(); ) {
-                if (toDeleteBatch.find(*it) != toDeleteBatch.end()) {
-                    // std::cout << "Message " << *it << " fully removed " << std::endl;
-                    it = std::deque<int>::reverse_iterator(
-                        messageQueue.erase(std::next(it).base()));
-                } else {
-                    ++it;
-                }
-            }
+            // for (auto it = messageQueue.rbegin(); it != messageQueue.rend(); ) {
+            //     if (toDeleteBatch.find(*it) != toDeleteBatch.end()) {
+            //         std::cout << "Message " << *it << " fully removed " << std::endl;
+            //         it = std::deque<int>::reverse_iterator(
+            //             messageQueue.erase(std::next(it).base()));
+            //     } else {
+            //         ++it;
+            //     }
+            // }
 
             // Re-queue the unacknowledged messages
             for (int messageId : unacknowledgedBatch) {
@@ -231,9 +232,9 @@ void PerfectLinks::receiveAcknowledgments() {
             {
                 std::unique_lock<std::mutex> ackLock(this->ackMutex);
 
-                // if (messageMap.find(ackNumber) != end){ // TODO otherwise, already not interested
+                if (messageMap.find(ackNumber) != messageMap.end()){ // TODO otherwise, already not interested
                     acknowledgments.insert(ackNumber); 
-                // }
+                }
                 std::cout << "Ack ID: " << ackNumber << ";;" << " AckSize " << acknowledgments.size() << " QueSize " << messageQueue.size() << std::endl;
             }
             ackCv.notify_all();
