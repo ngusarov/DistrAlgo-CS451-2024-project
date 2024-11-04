@@ -221,6 +221,23 @@ int main(int argc, char **argv) {
     pl = &plInstance;  // Set the global pointer to the created PerfectLinks object
 
 
+    for (const auto& host : hosts) {
+        sockaddr_in addr;
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(static_cast<uint16_t>(host.port)); // Explicitly cast port
+
+        // Ensure host.ip is a string; inet_pton will fill addr.sin_addr
+        if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) <= 0) {
+            std::cerr << "Error: Invalid IP address format for host " << host.id << "\n";
+            continue;
+        }
+
+        // Explicitly cast host.id to int to avoid precision loss
+        plInstance.addressToProcessId[addr] = static_cast<int>(host.id);
+    }
+
+
+
     pl->packetSize = 8;  // Send larger batches, depending on the system's capacity
     pl->isReceiver = isReceiver;
 

@@ -28,6 +28,23 @@ struct PairHash {
     }
 };
 
+// Custom hash function for sockaddr_in
+struct AddressHash {
+    std::size_t operator()(const sockaddr_in& addr) const {
+        // Combine the IP address and port into a single hash value
+        return std::hash<uint32_t>()(addr.sin_addr.s_addr) ^ std::hash<uint16_t>()(addr.sin_port);
+    }
+};
+
+// Equality operator for sockaddr_in
+struct AddressEqual {
+    bool operator()(const sockaddr_in& a, const sockaddr_in& b) const {
+        return a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port;
+    }
+};
+
+
+
 class PerfectLinks {
 public:
     PerfectLinks(int sockfd, const sockaddr_in &myAddr, std::ofstream& logFile, int myProcessId);
@@ -46,6 +63,7 @@ public:
 public:
     int sockfd;  // The socket file descriptor used for communication
     sockaddr_in myAddr;  // The address of this process
+    sockaddr_in destAddr;  // The address of this process
     std::ofstream& logFile;  // Output file for logging
     int myProcessId;  // ID of the current process
 
@@ -62,14 +80,17 @@ public:
     std::mutex messageMapMutex;
 
     // Message queue management
-    std::deque<std::pair<sockaddr_in, std::pair<std::string, int>>> messageQueue;  // Queue of messages to be sent
+    std::deque<int> messageQueue;  // Queue of messages to be sent
     std::mutex queueMutex;  // Mutex for accessing the message queue
     std::condition_variable queueCv;  // Condition variable for notifying send threads about new messages
     std::vector<std::thread> sendThreads;  // Thread pool for sending messages
 
     // Acknowledgment queue management
     // Add the unordered_map to maintain ack queues for each process
-    std::unordered_map<int, std::deque<std::tuple<sockaddr_in, int, int>>> processAckQueues;
+    std::unordered_map<sockaddr_in, int, AddressHash, AddressEqual> addressToProcessId;
+
+    std::unordered_map<sockaddr_in, std::deque<int>, AddressHash, AddressEqual> processAckQueues; // Queue of acks by address
+
     std::mutex ackQueueMutex;  // Mutex for accessing the ackQueue
     std::condition_variable ackCv;  // Condition variable for ack queue
 
