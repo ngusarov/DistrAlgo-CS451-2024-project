@@ -28,22 +28,43 @@ void PerfectLinks::startSending(const sockaddr_in &destAddr, int messageCount) {
 
     doneLogging = false;
 
-    // Main thread: Fill the message queue with message IDs only
-    for (int i = 1; i <= messageCount; ++i) {
-        // Enqueue the messageId for logging (for sender)
+    int i = 1;
+    while (i <= messageCount){
         {
             std::unique_lock<std::mutex> logLock(logMutex);
-            senderLogQueue.push_back(i);  // Log message ID only
-        }
-        logCv.notify_one();  // Notify the sender log thread
-
-        // Add only message ID to the queue
-        {
             std::unique_lock<std::mutex> queueLock(queueMutex);
-            messageQueue.push_back(i);  // Only message ID is added
+
+            if (messageQueue.size() <= 1000000){
+                senderLogQueue.push_back(i);  // Log message ID only
+                messageQueue.push_back(i);  // Only message ID is added
+                logCv.notify_one();  // Notify the sender log thread
+                queueCv.notify_one();  // Notify one of the sending threads
+                ++i;
+            }else{
+                std::this_thread::sleep_for(std::chrono::nanoseconds(1000));
+            }
+
+
         }
-        queueCv.notify_one();  // Notify one of the sending threads
+        
     }
+
+    // // Main thread: Fill the message queue with message IDs only
+    // for (int i = 1; i <= messageCount; ++i) {
+    //     // Enqueue the messageId for logging (for sender)
+    //     {
+    //         std::unique_lock<std::mutex> logLock(logMutex);
+    //         senderLogQueue.push_back(i);  // Log message ID only
+    //     }
+    //     logCv.notify_one();  // Notify the sender log thread
+
+    //     // Add only message ID to the queue
+    //     {
+    //         std::unique_lock<std::mutex> queueLock(queueMutex);
+    //         messageQueue.push_back(i);  // Only message ID is added
+    //     }
+    //     queueCv.notify_one();  // Notify one of the sending threads
+    // }
 
     doneLogging = true;
 

@@ -198,7 +198,7 @@ class Validation:
         # Ensure all broadcasted messages were delivered
         for process_id, msg_id in global_broadcasted:
             if (process_id, msg_id) not in global_delivered and process_id not in terminated_processes:
-                print("broadcasted_but_not_delivered d", process_id, msg_id)
+                # print("broadcasted_but_not_delivered d", process_id, msg_id)
                 errors["broadcasted_but_not_delivered"] += 1
 class LatticeAgreementValidation:
     def __init__(self, processes, proposals, max_proposal_size, distinct_values):

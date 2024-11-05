@@ -21,79 +21,79 @@ static void stop(int) {
     std::cout << "Immediately stopping network packet processing.\n";
     std::cout << "Writing output.\n";
 
-    if (pl != nullptr) {
-        // Print deliveredMessages to a new file for testing purposes
-        std::ofstream deliveredMessagesFile("deliveredMessages.txt");
-        if (deliveredMessagesFile.is_open() && pl->isReceiver) {
-            std::lock_guard<std::mutex> lock(pl->deliveryMutex);  // Protect deliveredMessages
-            for (const auto& msg : pl->deliveredMessages) {
-                deliveredMessagesFile << "d "
-                                      << msg.first << " "
-                                      << msg.second << "\n";
-            }
-            deliveredMessagesFile.close();
-        } else {
-            std::cerr << "Failed to open deliveredMessages.log for writing!\n";
-        }
+    // if (pl != nullptr) {
+    //     // Print deliveredMessages to a new file for testing purposes
+    //     // std::ofstream deliveredMessagesFile("deliveredMessages.txt");
+    //     // if (deliveredMessagesFile.is_open() && pl->isReceiver) {
+    //     //     std::lock_guard<std::mutex> lock(pl->deliveryMutex);  // Protect deliveredMessages
+    //     //     for (const auto& msg : pl->deliveredMessages) {
+    //     //         deliveredMessagesFile << "d "
+    //     //                               << msg.first << " "
+    //     //                               << msg.second << "\n";
+    //     //     }
+    //     //     deliveredMessagesFile.close();
+    //     // } else {
+    //     //     std::cerr << "Failed to open deliveredMessages.log for writing!\n";
+    //     // }
 
-        // Flushing logs based on whether it's a sender or receiver
-        std::lock_guard<std::mutex> logLock(pl->logMutex);
-        pl->running = false;
+    //     // Flushing logs based on whether it's a sender or receiver
+    //     std::lock_guard<std::mutex> logLock(pl->logMutex);
+    //     pl->running = false;
 
-        // Join the log threads and flush queues based on process type (sender/receiver)
-        if (pl->isReceiver) {
-            const size_t batchSize = 500;  // Increase batch size to handle larger volumes efficiently
-            std::string logBatch;
+    //     // Join the log threads and flush queues based on process type (sender/receiver)
+    //     if (pl->isReceiver) {
+    //         const size_t batchSize = 500;  // Increase batch size to handle larger volumes efficiently
+    //         std::string logBatch;
 
-            while (!pl->receiverLogQueue.empty()) {
-                {
-                    std::unique_lock<std::mutex> logLock(pl->logMutex);
-                    pl->logCv.wait(logLock, [&]() { return !pl->receiverLogQueue.empty(); });
+    //         while (!pl->receiverLogQueue.empty()) {
+    //             {
+    //                 std::unique_lock<std::mutex> logLock(pl->logMutex);
+    //                 pl->logCv.wait(logLock, [&]() { return !pl->receiverLogQueue.empty(); });
 
-                    while (!pl->receiverLogQueue.empty() && logBatch.size() < batchSize) {
-                        auto logEntry = pl->receiverLogQueue.front();
-                        pl->receiverLogQueue.pop_front();
+    //                 while (!pl->receiverLogQueue.empty() && logBatch.size() < batchSize) {
+    //                     auto logEntry = pl->receiverLogQueue.front();
+    //                     pl->receiverLogQueue.pop_front();
 
-                        // Accumulate log entries for delivery: "d <senderProcessId> <messageId>"
-                        logBatch += "d " + std::to_string(logEntry.first) + " " + std::to_string(logEntry.second) + "\n";
-                    }
-                }
+    //                     // Accumulate log entries for delivery: "d <senderProcessId> <messageId>"
+    //                     logBatch += "d " + std::to_string(logEntry.first) + " " + std::to_string(logEntry.second) + "\n";
+    //                 }
+    //             }
 
-                // Write the entire batch to the log file in one operation
-                if (!logBatch.empty()) {
-                    pl->logFile << logBatch;
-                    pl->logFile.flush();  // Explicitly flush after writing the batch
-                    logBatch.clear();
-                }
-            }
-        } else {
-            const size_t batchSize = 500;  // Increase batch size to handle larger volumes efficiently
+    //             // Write the entire batch to the log file in one operation
+    //             if (!logBatch.empty()) {
+    //                 pl->logFile << logBatch;
+    //                 pl->logFile.flush();  // Explicitly flush after writing the batch
+    //                 logBatch.clear();
+    //             }
+    //         }
+    //     } else {
+    //         const size_t batchSize = 500;  // Increase batch size to handle larger volumes efficiently
 
-            std::string logBatch;
+    //         std::string logBatch;
 
-            while (!pl->doneLogging || !pl->senderLogQueue.empty()) {
-                {
-                    std::unique_lock<std::mutex> logLock(pl->logMutex);
-                    pl->logCv.wait(logLock, [&]() { return !pl->senderLogQueue.empty() || !pl->running; });
+    //         while (!pl->doneLogging || !pl->senderLogQueue.empty()) {
+    //             {
+    //                 std::unique_lock<std::mutex> logLock(pl->logMutex);
+    //                 pl->logCv.wait(logLock, [&]() { return !pl->senderLogQueue.empty() || !pl->running; });
 
-                    while (!pl->senderLogQueue.empty() && logBatch.size() < batchSize) {
-                        int messageId = pl->senderLogQueue.front();
-                        pl->senderLogQueue.pop_front();
+    //                 while (!pl->senderLogQueue.empty() && logBatch.size() < batchSize) {
+    //                     int messageId = pl->senderLogQueue.front();
+    //                     pl->senderLogQueue.pop_front();
 
-                        // Accumulate log entries for broadcast
-                        logBatch += "b " + std::to_string(messageId) + "\n";
-                    }
-                }
+    //                     // Accumulate log entries for broadcast
+    //                     logBatch += "b " + std::to_string(messageId) + "\n";
+    //                 }
+    //             }
 
-                // Write the entire batch to the log file in one operation
-                if (!logBatch.empty()) {
-                    pl->logFile << logBatch;
-                    pl->logFile.flush();  // Explicitly flush after writing the batch
-                    logBatch.clear();
-                }
-            }
-        }
-    }
+    //             // Write the entire batch to the log file in one operation
+    //             if (!logBatch.empty()) {
+    //                 pl->logFile << logBatch;
+    //                 pl->logFile.flush();  // Explicitly flush after writing the batch
+    //                 logBatch.clear();
+    //             }
+    //         }
+    //     }
+    // }
 
     exit(0);  // Exit the program
 }
