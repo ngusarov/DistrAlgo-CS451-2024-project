@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdlib>  // For rand()
 #include <unordered_set>     // For unordered_set
 #include <unordered_map>     // For unordered_map
 #include <set>               // For set (if needed)
@@ -78,6 +79,9 @@ public:
 
     std::unordered_map<int, int> messageMap;
     std::mutex messageMapMutex;
+
+    std::unordered_map<int, int> messageCounterMap;
+    std::mutex messageCounterMapMutex;
 
     // Message queue management
     std::deque<int> messageQueue;  // Queue of messages to be sent

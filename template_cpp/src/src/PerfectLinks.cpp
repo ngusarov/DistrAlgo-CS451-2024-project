@@ -101,9 +101,11 @@ void PerfectLinks::sendWorker() {
         std::vector<int> packet;
 
         for (int messageId : localBatch) {
+            if (messageId > 0){
             {   
                 std::unique_lock<std::mutex> ackLock(this->ackMutex);
                 std::unique_lock<std::mutex> messageMapLock(this->messageMapMutex);
+                std::unique_lock<std::mutex> messageCounterMapLock(this->messageCounterMapMutex);
 
                 if (acknowledgments.find(messageId) != acknowledgments.end()) {
                     --messageMap[messageId];
@@ -115,11 +117,41 @@ void PerfectLinks::sendWorker() {
 
                     }
                 } else {
-                    messageMap[messageId] = 1; // TODO do we need it here????
+                    
+
+                    if (messageCounterMap.find(messageId) != messageCounterMap.end()){
+                        ++messageCounterMap[messageId];
+                    }else{
+                        messageCounterMap[messageId] = 1;
+                    }
+
+
+                    // if (messageCounterMap[messageId] > 50) {
+                    //     std::this_thread::sleep_for(std::chrono::nanoseconds(10));
+                    //     // // 10% probability check
+                    //     // if (rand() % 50 == 0) {
+                    //     //     // Message not acknowledged; add to packet and to re-queue list
+                    //     //     packet.push_back(messageId);
+                    //     //     messageMap[messageId] = 1; // TODO do we need it here????
+                    //     // }else{
+                    //     //     --messageCounterMap[messageId];
+                    //     // }
+                    // } 
+                    // else {
+                    //     // Message not acknowledged; add to packet and to re-queue list
+                    //     packet.push_back(messageId);
+                    //     messageMap[messageId] = 1; // TODO do we need it here????
+                    // }
+
                     // Message not acknowledged; add to packet and to re-queue list
                     packet.push_back(messageId);
+                    messageMap[messageId] = 1; // TODO do we need it here????
+
                     unacknowledgedBatch.push_back(messageId);  // Prepare to re-queue
                 }
+            }
+            }else{
+                packet.push_back(messageId);
             }
         }
 
@@ -128,6 +160,11 @@ void PerfectLinks::sendWorker() {
             std::this_thread::sleep_for(std::chrono::nanoseconds(100));
             continue;
         }
+        // else if (packet.size() < 2){
+        //     std::cout << "Too small packet: starting over" << std::endl;
+        //     std::this_thread::sleep_for(std::chrono::nanoseconds(500));
+        //     continue;
+        // }
 
         // Send combined packet with only message IDs
         std::string combinedPacket;
@@ -232,6 +269,19 @@ void PerfectLinks::receiveAcknowledgments() {
             {
                 std::unique_lock<std::mutex> ackLock(this->ackMutex);
 
+                --messageCounterMap[ackNumber];
+                if (messageCounterMap[ackNumber] <= 0){
+                    {
+                        std::unique_lock<std::mutex> queueLock(this->queueMutex);
+                        messageQueue.push_front(ackNumber * (-1));
+                        // messageQueue.push_front(ackNumber * (-1));
+                        // messageQueue.push_front(ackNumber * (-1));
+                    }
+                    messageCounterMap.erase(ackNumber);
+
+                    std::cout << "Erased counter " << ackNumber << "}" << std::endl;
+                }
+
                 if (messageMap.find(ackNumber) != messageMap.end()){ // TODO otherwise, already not interested
                     acknowledgments.insert(ackNumber); 
                 }
@@ -290,7 +340,7 @@ void PerfectLinks::ackWorker() {
                         // Check if the message was delivered
                         if (deliveredMessages.find({senderProcessId, messageId}) != deliveredMessages.end()) {
                             ackPacket.push_back(messageId);
-                            std::cout << "ACK for message " << messageId << " from Address " << srcAddr.sin_port << std::endl;
+                            std::cout << "ACK for message " << messageId << " from Address " << senderProcessId << " Size " << deliveredMessages.size() << std::endl;
                         }
                     }
 
@@ -359,9 +409,11 @@ void PerfectLinks::receiveMessages() {
         std::istringstream packetStream(receivedPacket);
         std::string message;
 
-        std::cout << "Received ";
+        
         while (std::getline(packetStream, message, ';')) {
             int messageId = std::stoi(message);
+
+            // std::cout << "Received " << senderProcessId << " " << messageId << std::endl;
 
             // Check for duplication
             {
@@ -373,6 +425,15 @@ void PerfectLinks::receiveMessages() {
 
                     // Check if the message is already delivered
                     std::pair<int, int> msgPair = {senderProcessId, messageId};
+
+                    if (messageId < 0){
+                        deliveredMessages.erase(std::make_pair(senderProcessId, messageId * (-1)));
+
+                        std::cout << "Erased " << senderProcessId << " " << messageId * (-1) << " Size " << deliveredMessages.size() << std::endl;
+
+                        continue;
+                    }
+
                     if (deliveredMessages.find(msgPair) == deliveredMessages.end()) {
                         deliveredMessages.insert(msgPair);
 
@@ -391,8 +452,6 @@ void PerfectLinks::receiveMessages() {
                 processAckQueues[srcAddr].push_back(messageId);  // Queue ack by source address
             }
         }
-
-        std::cout << std::endl;
     }
 
     // Stop the receiver logging thread
