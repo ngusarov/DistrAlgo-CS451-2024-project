@@ -19,7 +19,7 @@ void PerfectLinks::startSending(const sockaddr_in &destAddr, int messageCount) {
     this->destAddr = destAddr;
 
     // Start the sender logging thread
-    senderLogThread = std::thread(&PerfectLinks::senderLogWorker, this);
+    // senderLogThread = std::thread(&PerfectLinks::senderLogWorker, this);
 
     // Create a pool of 3 threads to handle sending messages
     for (int i = 0; i < 3; ++i) {
@@ -34,10 +34,17 @@ void PerfectLinks::startSending(const sockaddr_in &destAddr, int messageCount) {
             std::unique_lock<std::mutex> logLock(logMutex);
             std::unique_lock<std::mutex> queueLock(queueMutex);
 
-            if (messageQueue.size() <= 1000000){
-                senderLogQueue.push_back(i);  // Log message ID only
+            if (messageQueue.size() <= 1000000){ // TODO sliding window instead
+
+                logFile << "b " + std::to_string(i) + "\n";;
+                logFile.flush();  // Explicitly flush after writing the batch
+                
+                // senderLogQueue.push_back(i);  // Log message ID only
+
                 messageQueue.push_back(i);  // Only message ID is added
-                logCv.notify_one();  // Notify the sender log thread
+
+                // logCv.notify_one();  // Notify the sender log thread
+
                 queueCv.notify_one();  // Notify one of the sending threads
                 ++i;
             }else{
