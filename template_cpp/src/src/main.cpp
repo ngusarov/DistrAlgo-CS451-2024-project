@@ -45,79 +45,66 @@ static void stop(int) {
     std::cout << "Immediately stopping network packet processing.\n";
     std::cout << "Writing output.\n";
 
-    if (pl != nullptr) {
-        // Print deliveredMessages to a new file for testing purposes
-        // std::ofstream deliveredMessagesFile("deliveredMessages.txt");
-        // if (deliveredMessagesFile.is_open() && pl->isReceiver) {
-        //     std::lock_guard<std::mutex> lock(pl->deliveryMutex);  // Protect deliveredMessages
-        //     for (const auto& msg : pl->deliveredMessages) {
-        //         deliveredMessagesFile << "d "
-        //                               << msg.first << " "
-        //                               << msg.second << "\n";
-        //     }
-        //     deliveredMessagesFile.close();
-        // } else {
-        //     std::cerr << "Failed to open deliveredMessages.log for writing!\n";
-        // }
+    // if (pl != nullptr) {
 
-        // Flushing logs based on whether it's a sender or receiver
-        std::lock_guard<std::mutex> logLock(pl->logMutex);
-        pl->running = false;
+    //     // Flushing logs based on whether it's a sender or receiver
+    //     std::lock_guard<std::mutex> logLock(pl->logMutex);
+    //     pl->running = false;
 
-        // Join the log threads and flush queues based on process type (sender/receiver)
-        if (pl->isReceiver) {
-            const size_t batchSize = 500;  // Increase batch size to handle larger volumes efficiently
-            std::string logBatch;
+    //     // Join the log threads and flush queues based on process type (sender/receiver)
+    //     if (pl->isReceiver) {
+    //         const size_t batchSize = 500;  // Increase batch size to handle larger volumes efficiently
+    //         std::string logBatch;
 
-            while (!pl->receiverLogQueue.empty()) {
-                {
-                    std::unique_lock<std::mutex> logLock(pl->logMutex);
-                    pl->logCv.wait(logLock, [&]() { return !pl->receiverLogQueue.empty(); });
+    //         while (!pl->receiverLogQueue.empty()) {
+    //             {
+    //                 std::unique_lock<std::mutex> logLock(pl->logMutex);
+    //                 pl->logCv.wait(logLock, [&]() { return !pl->receiverLogQueue.empty(); });
 
-                    while (!pl->receiverLogQueue.empty() && logBatch.size() < batchSize) {
-                        auto logEntry = pl->receiverLogQueue.front();
-                        pl->receiverLogQueue.pop_front();
+    //                 while (!pl->receiverLogQueue.empty() && logBatch.size() < batchSize) {
+    //                     auto logEntry = pl->receiverLogQueue.front();
+    //                     pl->receiverLogQueue.pop_front();
 
-                        // Accumulate log entries for delivery: "d <senderProcessId> <messageId>"
-                        logBatch += "d " + std::to_string(logEntry.first) + " " + std::to_string(logEntry.second) + "\n";
-                    }
-                }
+    //                     // Accumulate log entries for delivery: "d <senderProcessId> <messageId>"
+    //                     logBatch += "d " + std::to_string(logEntry.first) + " " + std::to_string(logEntry.second) + "\n";
+    //                 }
+    //             }
 
-                // Write the entire batch to the log file in one operation
-                if (!logBatch.empty()) {
-                    pl->logFile << logBatch;
-                    pl->logFile.flush();  // Explicitly flush after writing the batch
-                    logBatch.clear();
-                }
-            }
-        } else {
-            const size_t batchSize = 500;  // Increase batch size to handle larger volumes efficiently
+    //             // Write the entire batch to the log file in one operation
+    //             if (!logBatch.empty()) {
+    //                 pl->logFile << logBatch;
+    //                 pl->logFile.flush();  // Explicitly flush after writing the batch
+    //                 logBatch.clear();
+    //             }
+    //         }
+    //     } else {
+    //         const size_t batchSize = 500;  // Increase batch size to handle larger volumes efficiently
 
-            std::string logBatch;
+    //         std::string logBatch;
 
-            while (!pl->doneLogging || !pl->senderLogQueue.empty()) {
-                {
-                    std::unique_lock<std::mutex> logLock(pl->logMutex);
-                    pl->logCv.wait(logLock, [&]() { return !pl->senderLogQueue.empty() || !pl->running; });
+    //         while (!pl->doneLogging || !pl->senderLogQueue.empty()) {
+    //             {
+    //                 std::unique_lock<std::mutex> logLock(pl->logMutex);
+    //                 pl->logCv.wait(logLock, [&]() { return !pl->senderLogQueue.empty() || !pl->running; });
 
-                    while (!pl->senderLogQueue.empty() && logBatch.size() < batchSize) {
-                        int messageId = pl->senderLogQueue.front();
-                        pl->senderLogQueue.pop_front();
+    //                 while (!pl->senderLogQueue.empty() && logBatch.size() < batchSize) {
+    //                     int messageId = pl->senderLogQueue.front();
+    //                     pl->senderLogQueue.pop_front();
 
-                        // Accumulate log entries for broadcast
-                        logBatch += "b " + std::to_string(messageId) + "\n";
-                    }
-                }
+    //                     // Accumulate log entries for broadcast
+    //                     logBatch += "b " + std::to_string(messageId) + "\n";
+    //                 }
+    //             }
 
-                // Write the entire batch to the log file in one operation
-                if (!logBatch.empty()) {
-                    pl->logFile << logBatch;
-                    pl->logFile.flush();  // Explicitly flush after writing the batch
-                    logBatch.clear();
-                }
-            }
-        }
-    }
+    //             // Write the entire batch to the log file in one operation
+    //             if (!logBatch.empty()) {
+    //                 pl->logFile << logBatch;
+    //                 pl->logFile.flush();  // Explicitly flush after writing the batch
+    //                 logBatch.clear();
+    //             }
+    //         }
+    //     }
+    // }
 
     exit(0);  // Exit the program
 }
@@ -190,10 +177,10 @@ int main(int argc, char **argv) {
         perror("Failed to set SO_REUSEADDR");
     }
 
-    // Optionally, enable SO_REUSEPORT for load balancing between processes
-    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
-        perror("Failed to set SO_REUSEPORT");
-    }
+    // // Optionally, enable SO_REUSEPORT for load balancing between processes
+    // if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+    //     perror("Failed to set SO_REUSEPORT");
+    // }
 
     // // Increase socket buffer sizes for sending and receiving
     // int rcvbuf_size = 16384; 
@@ -206,11 +193,11 @@ int main(int argc, char **argv) {
     //     perror("Failed to set send buffer size");
     // }
 
-    // Optionally, set the socket to non-blocking mode
-    int flags = fcntl(sockfd, F_GETFL, 0);
-    if (fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        perror("Failed to set non-blocking mode");
-    }
+    // // Optionally, set the socket to non-blocking mode
+    // int flags = fcntl(sockfd, F_GETFL, 0);
+    // if (fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) {
+    //     perror("Failed to set non-blocking mode");
+    // }
 
     // Configure and bind the socket to the specified address and port
     struct sockaddr_in myAddr {};
@@ -282,33 +269,48 @@ int main(int argc, char **argv) {
         plInstance.addressToProcessId[addr] = static_cast<int>(host.id);
     }
 
+    pl->startTime = std::chrono::high_resolution_clock::now();
 
 
     pl->packetSize = 8;  // Send larger batches, depending on the system's capacity
     pl->isReceiver = isReceiver;
 
     if (isReceiver) {
-        // Receiver logic - run until all senders stop
-        std::thread receiverThread(&PerfectLinks::receiveMessages, pl);
+        std::vector<std::thread> receiverThreads;
+        for (int i = 0; i < 4; ++i) {
+            receiverThreads.emplace_back(&PerfectLinks::receiveMessages, pl);
+        }
 
-        // Start threads to handle acknowledgment sending
-        std::thread ackThread(&PerfectLinks::startSendingAcks, pl);
+        std::vector<std::thread> deliveryThreads;
+        for (int i = 0; i < 1; ++i) {
+            deliveryThreads.emplace_back(&PerfectLinks::deliveryWorker, pl);
+        }
 
-        receiverThread.join(); // Keep the receiver running until terminated
-        ackThread.join(); // Keep acknowledgment threads running
-    } else {
-        // Sender logic
-        std::thread receiverThread(&PerfectLinks::receiveAcknowledgments, pl);
+        for (auto &thread : receiverThreads) {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
 
-        struct sockaddr_in receiverAddr = {};
-        receiverAddr.sin_family = AF_INET;
-        receiverAddr.sin_port = htons(hosts[receiverId - 1].port);
-        inet_pton(AF_INET, "127.0.0.1", &receiverAddr.sin_addr);
-
-        pl->startSending(receiverAddr, messageCount);
-
-        receiverThread.join();  // Keep listening for acks
+        for (auto &thread : deliveryThreads) {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
     }
+    else {
+            // Sender logic
+            std::thread receiverThread(&PerfectLinks::receiveAcknowledgments, pl);
+
+            struct sockaddr_in receiverAddr = {};
+            receiverAddr.sin_family = AF_INET;
+            receiverAddr.sin_port = htons(hosts[receiverId - 1].port);
+            inet_pton(AF_INET, "127.0.0.1", &receiverAddr.sin_addr);
+
+            pl->startSending(receiverAddr, messageCount);
+
+            receiverThread.join();  // Keep listening for acks
+        }
 
     return 0;
 }

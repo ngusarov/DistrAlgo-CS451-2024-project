@@ -19,6 +19,10 @@
 #include <vector>            // For std::vector
 #include <string>            // For std::string
 
+#include <chrono>
+
+#include "MessageSegments.hpp"
+
 // Custom hash function for pairs of ints
 struct PairHash {
     template <class T1, class T2>
@@ -55,8 +59,10 @@ public:
     void receiveAcknowledgments();  // For the sender to handle acknowledgment reception
     void startSendingAcks();  // For the receiver to send acknowledgments
     void stopDelivering();  // To stop receiving/sending
+    void deliveryWorker();
 
     int packetSize;  // Add packet size as a public member variable
+    int windowSize;  // Add packet size as a public member variable
     bool isReceiver;
 
     bool doneLogging;
@@ -68,26 +74,37 @@ public:
     std::ofstream& logFile;  // Output file for logging
     int myProcessId;  // ID of the current process
 
-    // Mutex and condition variables for managing acknowledgment tracking
-    std::mutex ackMutex;
+    std::chrono::time_point<std::chrono::high_resolution_clock> startTime;
+
 
     // Data structures for storing state
-    std::unordered_set<int> acknowledgments;  // Keeps track of acknowledgment counters by message ID
-    std::unordered_set<std::pair<int, int>, PairHash> deliveredMessages;  // Keeps track of delivered message pairs (processId, messageId)
+    
+    std::unordered_map<int, MessageSegments> deliveredMessages;  // Map processId -> MessageSegments for efficient delivery tracking
     std::mutex deliveryMutex;  // Protects the deliveredMessages set
     std::atomic<bool> running{true};  // Flag to indicate if the deliver thread should keep running
 
-    std::unordered_map<int, int> messageMap;
-    std::mutex messageMapMutex;
 
-    std::unordered_map<int, int> messageCounterMap;
-    std::mutex messageCounterMapMutex;
+    std::mutex pointerMutex;  // Mutex for protecting sendPointer and subQueue operations
+    std::pair<size_t, int> sendPointer;  // {index, message ID}
+    
+    // Mutex for thread safety
+    std::mutex subQueueMutex;
+    std::mutex mainQueueMutex;
+    // Replace subQueue with unordered_set
+    std::deque<int> subQueue;  // Subqueue for sliding window
+    MessageSegments mainQueue;  // Represents the full queue
 
-    // Message queue management
-    std::deque<int> messageQueue;  // Queue of messages to be sent
-    std::mutex queueMutex;  // Mutex for accessing the message queue
+    int loopCounter;
+
+
     std::condition_variable queueCv;  // Condition variable for notifying send threads about new messages
     std::vector<std::thread> sendThreads;  // Thread pool for sending messages
+    // Add these members
+    std::condition_variable sleepCv;  // Condition variable for sleeping
+    std::mutex sleepMutex;            // Mutex to protect the condition variable
+    std::atomic<bool> sleepThreads{false};  // Flag to signal sleep
+    bool flagSleep;
+    bool flagShrinkQueue;
 
     // Acknowledgment queue management
     // Add the unordered_map to maintain ack queues for each process
@@ -107,6 +124,15 @@ public:
     std::thread senderLogThread;  // Thread to handle sender logging
     std::thread receiverLogThread;  // Thread to handle receiver logging
 
+
+
+
+    std::deque<std::pair<sockaddr_in, int>> receivedQueue; // Shared queue for received messages
+    std::mutex receivedQueueMutex;  // Mutex for accessing receivedQueue
+    std::condition_variable receivedQueueCv; // CV to notify the deliveryWorker
+
+
+
     std::vector<std::thread> ackThreads;  // Thread pool for acknowledgment sending
 
     // std::unordered_set<int> allMessageIds;  // IDs of messages that are being tracked (sent but not yet acknowledged)
@@ -118,7 +144,7 @@ public:
     // Function declarations
     void sendWorker();
     void senderLogWorker();
-    void receiverLogWorker();
-    void ackWorker();  // Function to handle acknowledgment sending
-    void deleteFromQueue(int messageId);
+    // void receiverLogWorker();
+    // void ackWorker();  // Function to handle acknowledgment sending
+    // void deleteFromQueue(int messageId);
 };
