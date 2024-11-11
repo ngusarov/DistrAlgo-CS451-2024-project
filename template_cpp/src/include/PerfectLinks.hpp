@@ -18,6 +18,7 @@
 #include <utility>           // For std::pair
 #include <vector>            // For std::vector
 #include <string>            // For std::string
+#include <cstring>  // For memcmp
 
 #include <chrono>
 
@@ -47,6 +48,23 @@ struct AddressEqual {
         return a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port;
     }
 };
+
+struct MessageComparator {
+    bool operator()(const std::tuple<sockaddr_in, int, int>& a,
+                    const std::tuple<sockaddr_in, int, int>& b) const {
+        // Compare based on the third element first (descending order)
+        if (std::get<2>(a) != std::get<2>(b)) {
+            return std::get<2>(a) > std::get<2>(b);
+        }
+        // If counts are the same, compare the second element (ascending order)
+        if (std::get<1>(a) != std::get<1>(b)) {
+            return std::get<1>(a) < std::get<1>(b);
+        }
+        // As a tie-breaker, compare the sockaddr_in structures using IP and port
+        return memcmp(&std::get<0>(a), &std::get<0>(b), sizeof(sockaddr_in)) < 0;
+    }
+};
+
 
 
 
@@ -94,6 +112,11 @@ public:
     std::deque<int> subQueue;  // Subqueue for sliding window
     MessageSegments mainQueue;  // Represents the full queue
 
+    std::mutex acknowledgedMessagesMutex;  // Mutex for accessing the ackQueue
+    MessageSegments acknowledgedMessages;
+
+
+
     int loopCounter;
 
 
@@ -124,14 +147,10 @@ public:
     std::thread senderLogThread;  // Thread to handle sender logging
     std::thread receiverLogThread;  // Thread to handle receiver logging
 
+    std::set<std::tuple<sockaddr_in, int, int>, MessageComparator> receivedQueue;
 
-
-
-    std::deque<std::pair<sockaddr_in, int>> receivedQueue; // Shared queue for received messages
-    std::mutex receivedQueueMutex;  // Mutex for accessing receivedQueue
-    std::condition_variable receivedQueueCv; // CV to notify the deliveryWorker
-
-
+    std::mutex receivedQueueMutex;  // Mutex for thread safety
+    std::condition_variable receivedQueueCv;
 
     std::vector<std::thread> ackThreads;  // Thread pool for acknowledgment sending
 

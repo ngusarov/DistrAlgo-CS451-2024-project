@@ -6,7 +6,6 @@
 #include <fcntl.h>  // Include this to use F_GETFL, F_SETFL, O_NONBLOCK
 // #include <filesystem>  // Requires C++17
 
-
 #include "parser.hpp"
 #include "hello.h"
 #include "PerfectLinks.hpp"
@@ -45,6 +44,10 @@ static void stop(int) {
     std::cout << "Immediately stopping network packet processing.\n";
     std::cout << "Writing output.\n";
 
+    if (pl != nullptr) {
+        pl->logFile.flush();
+    }
+    
     // if (pl != nullptr) {
 
     //     // Flushing logs based on whether it's a sender or receiver
@@ -171,103 +174,174 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    // Set SO_REUSEADDR to allow quick reuse of the port after process termination
+    // Enable SO_REUSEADDR to quickly reuse the port after process termination
     int opt = 1;
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         perror("Failed to set SO_REUSEADDR");
     }
 
-    // // Optionally, enable SO_REUSEPORT for load balancing between processes
-    // if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
-    //     perror("Failed to set SO_REUSEPORT");
-    // }
-
-    // // Increase socket buffer sizes for sending and receiving
-    // int rcvbuf_size = 16384; 
-    // if (setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf_size, sizeof(rcvbuf_size)) < 0) {
-    //     perror("Failed to set receive buffer size");
-    // }
-
-    // int sndbuf_size = 16384;
-    // if (setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &sndbuf_size, sizeof(sndbuf_size)) < 0) {
-    //     perror("Failed to set send buffer size");
-    // }
-
-    // // Optionally, set the socket to non-blocking mode
-    // int flags = fcntl(sockfd, F_GETFL, 0);
-    // if (fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) {
-    //     perror("Failed to set non-blocking mode");
-    // }
-
-    // Configure and bind the socket to the specified address and port
-    struct sockaddr_in myAddr {};
-    myAddr.sin_family = AF_INET;
-    myAddr.sin_port = htons(hosts[myId - 1].port);
-    myAddr.sin_addr.s_addr = INADDR_ANY;
-
-    std::cout << "Process " << myId << " binding to port " << ntohs(myAddr.sin_port) << std::endl;
-
-
-    // Try to bind with the port above 10000
-    int port = hosts[myId - 1].port;
-    if (port < 1024) {
-        port = 1024 + static_cast<int>(myId);  // Start with 10000 if the assigned port is too low
-        myAddr.sin_port = htons(static_cast<uint16_t>(port));  // Update the port in the sockaddr_in struct
+    // Enable SO_REUSEPORT to allow multiple sockets to bind to the same port (useful in multi-process scenarios)
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+        perror("Failed to set SO_REUSEPORT");
     }
-    int bind_attempts = 0;
 
-    while (bind(sockfd, reinterpret_cast<struct sockaddr*>(&myAddr), sizeof(myAddr)) < 0) {
-        perror("bind failed: trying next port");
-        bind_attempts++;
+    // Increase receive buffer size to handle high incoming traffic
+    int rcvbuf_size = 512 * 1024;  // 512 KB
+    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf_size, sizeof(rcvbuf_size)) < 0) {
+        perror("Failed to set receive buffer size");
+    }
+
+    // Increase send buffer size for high outgoing traffic
+    int sndbuf_size = 512 * 1024;  // 512 KB
+    if (setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &sndbuf_size, sizeof(sndbuf_size)) < 0) {
+        perror("Failed to set send buffer size");
+    }
+
+    // Enable non-blocking mode for faster handling of incoming/outgoing packets
+    int flags = fcntl(sockfd, F_GETFL, 0);
+    if (flags == -1) {
+        perror("fcntl(F_GETFL) failed");
+        exit(EXIT_FAILURE);
+    }
+    if (fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        perror("Failed to set non-blocking mode");
+    }
+
+    // Optional: Set IP_PKTINFO to retrieve the destination address of incoming packets
+    int pktinfo = 1;
+    if (setsockopt(sockfd, IPPROTO_IP, IP_PKTINFO, &pktinfo, sizeof(pktinfo)) < 0) {
+        perror("Failed to set IP_PKTINFO");
+    }
+
+    int tos = 0x10;  // Low delay (e.g., for higher priority)
+    if (setsockopt(sockfd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos)) < 0) {
+        perror("Failed to set TOS");
+    }
+
+    for (auto& host : hosts) {
+    if (host.port < 2048) {
+        host.port = static_cast<uint16_t>((2048 + host.id <= std::numeric_limits<uint16_t>::max()) 
+                                    ? 2048 + host.id 
+                                    : std::numeric_limits<uint16_t>::max());
+
+
+        std::cout << "Host " << host.id << " had port below 2048. Reassigned to port " << host.port << std::endl;
+    }
+}
+
+// Populate addressToProcessId
+std::unordered_map<sockaddr_in, int, AddressHash, AddressEqual> updatedAddressToProcessId;
+for (const auto& host : hosts) {
+    struct sockaddr_in addr {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(host.port));  // Ensure port uses uint16_t
+
+    if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) <= 0) {
+        std::cerr << "Invalid IP address for host: " << host.ip << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
+    updatedAddressToProcessId[addr] = static_cast<int>(host.id);  // Ensure host.id fits the map type
+}
+
+std::cout << "Updated addressToProcessId and hosts table:" << std::endl;
+for (const auto& [addr, processId] : updatedAddressToProcessId) {
+    char ipStr[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &addr.sin_addr, ipStr, sizeof(ipStr));
+    std::cout << "Process " << processId << " -> " << ipStr << ":" << ntohs(addr.sin_port) << std::endl;
+}
+
+// Bind the socket for the current process
+struct sockaddr_in myAddr {};
+myAddr.sin_family = AF_INET;
+myAddr.sin_addr.s_addr = INADDR_ANY;
+myAddr.sin_port = htons(static_cast<uint16_t>(hosts[myId - 1].port));  // Use updated port
+
+std::cout << "Process " << myId << " binding to port " << ntohs(myAddr.sin_port) << std::endl;
+
+if (bind(sockfd, reinterpret_cast<struct sockaddr*>(&myAddr), sizeof(myAddr)) < 0) {
+    perror("Bind failed");
+    close(sockfd);
+    exit(EXIT_FAILURE);
+}
+
+std::cout << "Socket successfully bound for Process " << myId << " at port " << ntohs(myAddr.sin_port) << std::endl;
+
+// Initialize the PerfectLinks object globally
+PerfectLinks plInstance(sockfd, myAddr, logFile, static_cast<int>(myId));
+plInstance.addressToProcessId = std::move(updatedAddressToProcessId);
+pl = &plInstance;
+
+
+    // // Configure and bind the socket to the specified address and port
+    // struct sockaddr_in myAddr {};
+    // myAddr.sin_family = AF_INET;
+    // myAddr.sin_port = htons(hosts[myId - 1].port);
+    // myAddr.sin_addr.s_addr = INADDR_ANY;
+
+    // std::cout << "Process " << myId << " binding to port " << ntohs(myAddr.sin_port) << std::endl;
+
+
+    // // Try to bind with the port above 10000
+    // int port = hosts[myId - 1].port;
+    // if (port < 1024) {
+    //     port = 1024 + static_cast<int>(myId);  // Start with 10000 if the assigned port is too low
+    //     myAddr.sin_port = htons(static_cast<uint16_t>(port));  // Update the port in the sockaddr_in struct
+    // }
+    // int bind_attempts = 0;
+
+    // while (bind(sockfd, reinterpret_cast<struct sockaddr*>(&myAddr), sizeof(myAddr)) < 0) {
+    //     perror("bind failed: trying next port");
+    //     bind_attempts++;
         
-        if (bind_attempts > 100) {  // Limit the number of attempts
-            std::cerr << "Failed to bind after 100 attempts. Exiting." << std::endl;
-            close(sockfd);
-            exit(EXIT_FAILURE);
-        }
+    //     if (bind_attempts > 100) {  // Limit the number of attempts
+    //         std::cerr << "Failed to bind after 100 attempts. Exiting." << std::endl;
+    //         close(sockfd);
+    //         exit(EXIT_FAILURE);
+    //     }
 
-        // port++;  // Increment port and try again
-        myAddr.sin_port = htons(static_cast<uint16_t>(port));  // Update the port in the sockaddr_in struct
-    }
+    //     // port++;  // Increment port and try again
+    //     myAddr.sin_port = htons(hosts[myId - 1].port);
+    // }
 
-    // Now update the hosts with the new port number
-    hosts[myId - 1].port = ntohs(myAddr.sin_port);  // Update the port in the hosts list
+    // // Now update the hosts with the new port number
+    // hosts[myId - 1].port = ntohs(myAddr.sin_port);  // Update the port in the hosts list
 
-    std::cout << "Updated hosts: Process " << myId << " is now using port " << ntohs(myAddr.sin_port) << std::endl;
+    // std::cout << "Updated hosts: Process " << myId << " is now using port " << ntohs(myAddr.sin_port) << std::endl;
 
-    std::cout << "Socket bound to port " << ntohs(myAddr.sin_port) << std::endl;
+    // std::cout << "Socket bound to port " << ntohs(myAddr.sin_port) << std::endl;
 
-    // // Initialize PerfectLinks with current process ID (myId) and log file
-    // PerfectLinks pl(sockfd, myAddr, logFile, static_cast<int>(myId));
+    // // // Initialize PerfectLinks with current process ID (myId) and log file
+    // // PerfectLinks pl(sockfd, myAddr, logFile, static_cast<int>(myId));
 
-    // Initialize the PerfectLinks object globally
-    PerfectLinks plInstance(sockfd, myAddr, logFile, static_cast<int>(myId));
-    pl = &plInstance;  // Set the global pointer to the created PerfectLinks object
+    // // Initialize the PerfectLinks object globally
+    // PerfectLinks plInstance(sockfd, myAddr, logFile, static_cast<int>(myId));
+    // pl = &plInstance;  // Set the global pointer to the created PerfectLinks object
 
-    std::cout << "Ports" << std::endl;
-    for (const auto& host : hosts) {
-        sockaddr_in addr;
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(static_cast<uint16_t>(host.port)); // Explicitly cast port
+    // std::cout << "Ports" << std::endl;
+    // for (const auto& host : hosts) {
+    //     sockaddr_in addr;
+    //     addr.sin_family = AF_INET;
+    //     addr.sin_port = htons(static_cast<uint16_t>(host.port)); // Explicitly cast port
 
-        // Try to bind with the port above 10000
-        int port = host.port;
-        if (port < 1024) {
-            port = 1024 + static_cast<int>(host.id);  // Start with 10000 if the assigned port is too low
-            addr.sin_port = htons(static_cast<uint16_t>(port));  // Update the port in the sockaddr_in struct
-        }
+    //     // Try to bind with the port above 10000
+    //     int port = host.port;
+    //     if (port < 1024) {
+    //         port = 1024 + static_cast<int>(host.id);  // Start with 10000 if the assigned port is too low
+    //         addr.sin_port = htons(static_cast<uint16_t>(port));  // Update the port in the sockaddr_in struct
+    //     }
 
-        // Ensure host.ip is a string; inet_pton will fill addr.sin_addr
-        if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) <= 0) {
-            std::cerr << "Error: Invalid IP address format for host " << host.id << "\n";
-            continue;
-        }
+    //     // Ensure host.ip is a string; inet_pton will fill addr.sin_addr
+    //     if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) <= 0) {
+    //         std::cerr << "Error: Invalid IP address format for host " << host.id << "\n";
+    //         continue;
+    //     }
 
-        std::cout << host.id << " " << host.port << std::endl;
+    //     std::cout << host.id << " " << host.port << std::endl;
 
-        // Explicitly cast host.id to int to avoid precision loss
-        plInstance.addressToProcessId[addr] = static_cast<int>(host.id);
-    }
+    //     // Explicitly cast host.id to int to avoid precision loss
+    //     plInstance.addressToProcessId[addr] = static_cast<int>(host.id);
+    // }
 
     pl->startTime = std::chrono::high_resolution_clock::now();
 
@@ -277,12 +351,12 @@ int main(int argc, char **argv) {
 
     if (isReceiver) {
         std::vector<std::thread> receiverThreads;
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < 3; ++i) {
             receiverThreads.emplace_back(&PerfectLinks::receiveMessages, pl);
         }
 
         std::vector<std::thread> deliveryThreads;
-        for (int i = 0; i < 1; ++i) {
+        for (int i = 0; i < 2; ++i) {
             deliveryThreads.emplace_back(&PerfectLinks::deliveryWorker, pl);
         }
 
