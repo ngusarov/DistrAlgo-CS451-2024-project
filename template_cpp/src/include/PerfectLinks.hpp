@@ -22,17 +22,11 @@
 
 #include <chrono>
 
-#include "MessageSegments.hpp"
+#include "MessageSegments.hpp"  // For MessageSegments
 
-// Custom hash function for pairs of ints
-struct PairHash {
-    template <class T1, class T2>
-    std::size_t operator() (const std::pair<T1, T2>& pair) const {
-        std::size_t h1 = std::hash<T1>()(pair.first);
-        std::size_t h2 = std::hash<T2>()(pair.second);
-        return h1 ^ (h2 << 1); // Combine the two hash values
-    }
-};
+// Forward declaration of URB
+class UniformReliableBroadcast;
+
 
 // Custom hash function for sockaddr_in
 struct AddressHash {
@@ -50,120 +44,67 @@ struct AddressEqual {
 };
 
 struct MessageComparator {
-    bool operator()(const std::tuple<sockaddr_in, int, int>& a,
-                    const std::tuple<sockaddr_in, int, int>& b) const {
-        // Compare based on the third element first (descending order)
-        if (std::get<2>(a) != std::get<2>(b)) {
-            return std::get<2>(a) > std::get<2>(b);
-        }
-        // If counts are the same, compare the second element (ascending order)
+    bool operator()(const std::tuple<std::pair<int, int>, int>& a,
+                    const std::tuple<std::pair<int, int>, int>& b) const {
         if (std::get<1>(a) != std::get<1>(b)) {
-            return std::get<1>(a) < std::get<1>(b);
+            return std::get<1>(a) > std::get<1>(b);  // Compare counts (descending).
         }
-        // As a tie-breaker, compare the sockaddr_in structures using IP and port
-        return memcmp(&std::get<0>(a), &std::get<0>(b), sizeof(sockaddr_in)) < 0;
+        return std::get<0>(a) < std::get<0>(b);  // Compare {origProcId, messageId} lexicographically.
     }
 };
 
 
 
 
+
 class PerfectLinks {
 public:
-    PerfectLinks(int sockfd, const sockaddr_in &myAddr, std::ofstream& logFile, int myProcessId);
+    PerfectLinks(int sockfd, const sockaddr_in &myAddr, int myProcessId);
 
-    void startSending(const sockaddr_in &destAddr, int messageCount);
-    void receiveMessages();  // For the receiver to receive and log messages
-    void receiveAcknowledgments();  // For the sender to handle acknowledgment reception
-    void startSendingAcks();  // For the receiver to send acknowledgments
-    void stopDelivering();  // To stop receiving/sending
+    void sendMessage(const sockaddr_in &destAddr, std::pair<int, int> message);
+    void sendWorker();
+    void receive();
     void deliveryWorker();
+    void stopDelivering();  // To stop receiving/sending
 
-    int packetSize;  // Add packet size as a public member variable
-    int windowSize;  // Add packet size as a public member variable
-    bool isReceiver;
+    void acknowledgeMessage(sockaddr_in srcAddr, int origProcId, int messageId);
+    void deliverMessage(int senderProcessId, int origProcId, int messageId, bool flagReBroadcast);
 
-    bool doneLogging;
+    UniformReliableBroadcast* urb; // Pointer to URB instance
+
+    unsigned long packetSize;  // Add packet size as a public member variable
+    unsigned long windowSize;  // Add packet size as a public member variable
 
 public:
     int sockfd;  // The socket file descriptor used for communication
     sockaddr_in myAddr;  // The address of this process
-    sockaddr_in destAddr;  // The address of this process
-    std::ofstream& logFile;  // Output file for logging
     int myProcessId;  // ID of the current process
+    std::unordered_map<sockaddr_in, int, AddressHash, AddressEqual> addressToProcessId;
 
     std::chrono::time_point<std::chrono::high_resolution_clock> startTime;
-
-
-    // Data structures for storing state
-    
-    std::unordered_map<int, MessageSegments> deliveredMessages;  // Map processId -> MessageSegments for efficient delivery tracking
-    std::mutex deliveryMutex;  // Protects the deliveredMessages set
     std::atomic<bool> running{true};  // Flag to indicate if the deliver thread should keep running
 
-
+    // Data structures for sending messages
     std::mutex pointerMutex;  // Mutex for protecting sendPointer and subQueue operations
-    std::pair<size_t, int> sendPointer;  // {index, message ID}
-    
-    // Mutex for thread safety
+    std::unordered_map<sockaddr_in, std::pair<size_t, int>, AddressHash, AddressEqual> sendPointer;  // {recepientAddr, {index, message ID}}
+    bool flagShrinkQueue;
     std::mutex subQueueMutex;
-    std::mutex mainQueueMutex;
-    // Replace subQueue with unordered_set
-    std::deque<int> subQueue;  // Subqueue for sliding window
-    MessageSegments mainQueue;  // Represents the full queue
+    std::unordered_map<sockaddr_in, std::deque<std::pair<int, int>>, AddressHash, AddressEqual> subQueue;  // {recepientAddr, [...{origProcID, messageID}...]}
 
-    std::mutex acknowledgedMessagesMutex;  // Mutex for accessing the ackQueue
-    MessageSegments acknowledgedMessages;
+    // for cleaning the subQueue
+    std::mutex acknowledgedMessagesMutex;
+    std::unordered_map<sockaddr_in, std::unordered_map<int, MessageSegments>, AddressHash, AddressEqual> acknowledgedMessages; // {recepientAddr :  { origProcID : Segments} ... }
 
+    // Data structures for receiving messages
+    std::mutex deliveryMutex;  // Protects the deliveredMessages map
+    std::unordered_map<int, std::unordered_map<int, MessageSegments>> deliveredMessages;  // {recepientID :  { origProcID : Segments} ... }
+    
+    std::mutex receivedQueueMutex;
+    std::condition_variable receivedQueueCv;
+    std::unordered_map<sockaddr_in, std::set<std::tuple<std::pair<int, int>, int>, MessageComparator>, AddressHash, AddressEqual> receivedQueue; // recepientAddr : [...<<origProcID, messageID>, counts>...]
 
-
-    int loopCounter;
-
-
-    std::condition_variable queueCv;  // Condition variable for notifying send threads about new messages
-    std::vector<std::thread> sendThreads;  // Thread pool for sending messages
-    // Add these members
+    bool flagSleep;
     std::condition_variable sleepCv;  // Condition variable for sleeping
     std::mutex sleepMutex;            // Mutex to protect the condition variable
     std::atomic<bool> sleepThreads{false};  // Flag to signal sleep
-    bool flagSleep;
-    bool flagShrinkQueue;
-
-    // Acknowledgment queue management
-    // Add the unordered_map to maintain ack queues for each process
-    std::unordered_map<sockaddr_in, int, AddressHash, AddressEqual> addressToProcessId;
-
-    std::unordered_map<sockaddr_in, std::deque<int>, AddressHash, AddressEqual> processAckQueues; // Queue of acks by address
-
-    std::mutex ackQueueMutex;  // Mutex for accessing the ackQueue
-    std::condition_variable ackCv;  // Condition variable for ack queue
-
-    // Separate logging queues for sender and receiver
-    std::deque<int> senderLogQueue;  // Queue for storing message IDs (sender)
-    std::deque<std::pair<int, int>> receiverLogQueue;  // Queue for storing <senderId, messageId> (receiver)
-    
-    std::mutex logMutex;  // Mutex for accessing the log queues
-    std::condition_variable logCv;  // Condition variable for notifying log thread about new logs
-    std::thread senderLogThread;  // Thread to handle sender logging
-    std::thread receiverLogThread;  // Thread to handle receiver logging
-
-    std::set<std::tuple<sockaddr_in, int, int>, MessageComparator> receivedQueue;
-
-    std::mutex receivedQueueMutex;  // Mutex for thread safety
-    std::condition_variable receivedQueueCv;
-
-    std::vector<std::thread> ackThreads;  // Thread pool for acknowledgment sending
-
-    // std::unordered_set<int> allMessageIds;  // IDs of messages that are being tracked (sent but not yet acknowledged)
-    // // Mutex for protecting the access to allMessageIds
-    // std::mutex allMsgMutex;
-
-    // void performFaultCheck();
-
-    // Function declarations
-    void sendWorker();
-    void senderLogWorker();
-    // void receiverLogWorker();
-    // void ackWorker();  // Function to handle acknowledgment sending
-    // void deleteFromQueue(int messageId);
 };

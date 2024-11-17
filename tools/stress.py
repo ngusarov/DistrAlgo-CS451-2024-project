@@ -121,11 +121,19 @@ class Validation:
         return (hostsfile, configfile)
     
 
-    def validate_output(self, process_id, output_file, terminated_processes, global_broadcasted, global_delivered, errors):
-        if process_id in terminated_processes:
-            return
-
-        broadcast_count = 0  # To track the number of broadcasted messages
+    def validate_output(
+        self, 
+        process_id, 
+        output_file, 
+        global_broadcasted, 
+        global_delivered, 
+        errors, 
+        global_partial_delivered, 
+        last_delivered
+    ):
+        broadcast_count = 0
+        local_delivered = set()  # Track delivered messages for the current process
+        local_duplicates = 0     # Count of duplicates for this process
 
         with open(output_file, "r") as f:
             lines = f.readlines()
@@ -134,57 +142,76 @@ class Validation:
             line = line.strip()
 
             # Check for broadcasted messages
-            if line.startswith("b "):  # Format is "b <message_id>"
+            if line.startswith("b "):  # Format: "b <message_id>"
                 parts = line.split()
                 msg_id = int(parts[1])
-                global_broadcasted.add((process_id, msg_id))  # Add process ID and message ID as a tuple
-                broadcast_count += 1  # Increment the broadcast count for this process
+                global_broadcasted.add((process_id, msg_id))
+                broadcast_count += 1
 
             # Check for delivered messages
-            elif line.startswith("d "):  # Format is "d <sender_id> <message_id>"
+            elif line.startswith("d "):  # Format: "d <sender_id> <message_id>"
                 parts = line.split()
                 sender_id = int(parts[1])
                 msg_id = int(parts[2])
 
-                # Ensure no duplicate delivery across processes
-                if (sender_id, msg_id) in global_delivered:
-                    errors["duplicated"] += 1
+                # Check for local duplicates
+                if (sender_id, msg_id) in local_delivered:
+                    local_duplicates += 1
                 else:
-                    global_delivered.add((sender_id, msg_id))  # Track the sender and message ID
+                    local_delivered.add((sender_id, msg_id))
 
-        # Check if the process broadcasted fewer messages than expected
-        if process_id > 1 and broadcast_count < self.messages: # checking for broadcasters
+                # Uniform Agreement: track processes delivering the message
+                global_partial_delivered[(sender_id, msg_id)].add(process_id)
+
+                # FIFO Check
+                if msg_id < last_delivered[process_id][sender_id]:
+                    errors["fifo_violation"] += 1
+
+                last_delivered[process_id][sender_id] = msg_id
+
+        # Update the global error count for duplicates
+        errors["duplicated"] += local_duplicates
+
+        # Ensure sufficient broadcasts
+        if broadcast_count < self.messages:
             errors["not_broadcasted"] += (self.messages - broadcast_count)
 
+
     def validate_all_outputs(self, logsDir, processesInfo, processes):
-        # Dictionary to track error counts
         errors = {
             "not_broadcasted": 0,
             "duplicated": 0,
             "created_but_not_broadcasted": 0,
-            "broadcasted_but_not_delivered": 0
+            "broadcasted_but_not_delivered": 0,
+            "uniform_violations": 0,
+            "fifo_violation": 0
         }
 
-        # Determine terminated processes
-        terminated_processes = {pid for pid, info in processesInfo.items() if info.state == ProcessState.TERMINATED}
+        # Track global broadcasts and deliveries
+        global_broadcasted = set()
+        global_delivered = set()
+        global_partial_delivered = defaultdict(set)
 
-        # Initialize global sets for broadcasted and delivered messages
-        global_broadcasted = set()  # To track (process_id, message_id) tuples for broadcast messages
-        global_delivered = set()  # To track (sender_id, message_id) tuples for delivered messages
+        # FIFO Tracking
+        last_delivered = defaultdict(lambda: defaultdict(lambda: -1))
 
-        # Validate output for each process
         for pid in range(1, processes + 1):
             output_file = os.path.join(logsDir, f"proc{pid:02d}.output")
-            self.validate_output(pid, output_file, terminated_processes, global_broadcasted, global_delivered, errors)
+            self.validate_output(
+                pid, output_file, global_broadcasted, global_delivered,
+                errors, global_partial_delivered, last_delivered
+            )
 
-        # Ensure all broadcast messages were delivered correctly
-        self.validate_broadcast_delivery(global_broadcasted, global_delivered, terminated_processes, errors)
+        self.validate_broadcast_delivery(global_broadcasted, global_delivered, processesInfo, errors)
 
-        print()
-        print("Successfully validated the output.")
+        # Check uniform violations
+        for (sender_id, msg_id), delivered_set in global_partial_delivered.items():
+            for proc in processesInfo.keys():
+                if proc not in delivered_set and processesInfo[proc].state == ProcessState.RUNNING:
+                    errors["uniform_violations"] += 1
 
-        # Return the error dictionary instead of printing errors
         return errors
+
 
     def validate_broadcast_delivery(self, global_broadcasted, global_delivered, terminated_processes, errors):
         """

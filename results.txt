@@ -26,3 +26,22 @@ Time:  7.269379138946533
 
 # ----------------------------------------------------------------------------------------------------------------------------------------
 
+4 proc 1'000'000 msgs:
+
+MacBook:
+15 s; multiple threads:
+Errors:  {'not_broadcasted': 0, 'duplicated': 0, 'created_but_not_broadcasted': 0, 'broadcasted_but_not_delivered': 2447519}
+Time:  0.005402803421020508
+
+signgle receiver-single sender
+Errors:  {'not_broadcasted': 0, 'duplicated': 0, 'created_but_not_broadcasted': 0, 'broadcasted_but_not_delivered': 2457349}
+Time:  0.004797935485839844
+
+VM:
+15s; multiple:
+Errors:  {'not_broadcasted': 0, 'duplicated': 0, 'created_but_not_broadcasted': 0, 'broadcasted_but_not_delivered': 1759552}
+Time:  0.02208566665649414
+
+15s; single receiver-sender:
+Errors:  {'not_broadcasted': 0, 'duplicated': 0, 'created_but_not_broadcasted': 0, 'broadcasted_but_not_delivered': 2054600}
+Time:  0.040630340576171875

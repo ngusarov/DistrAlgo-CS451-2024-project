@@ -9,9 +9,11 @@
 #include "parser.hpp"
 #include "hello.h"
 #include "PerfectLinks.hpp"
+#include "URB.hpp"
 
 // Declare the global PerfectLinks object
 PerfectLinks* pl = nullptr;  // Initially a nullptr
+UniformReliableBroadcast* urb = nullptr;
 
 
 // void createLogFile(const std::string& outputPath) {
@@ -44,8 +46,8 @@ static void stop(int) {
     std::cout << "Immediately stopping network packet processing.\n";
     std::cout << "Writing output.\n";
 
-    if (pl != nullptr) {
-        pl->logFile.flush();
+    if (urb != nullptr) {
+        urb->logFile.flush();
     }
     
     // if (pl != nullptr) {
@@ -133,7 +135,7 @@ int main(int argc, char **argv) {
     unsigned long myId = parser.id();
     auto hosts = parser.hosts();
 
-    unsigned long receiverId;
+    // unsigned long receiverId;
     int messageCount;
 
     std::ifstream configFile(parser.configPath());
@@ -142,11 +144,12 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    configFile >> messageCount >> receiverId;
+    // configFile >> messageCount >> receiverId; // TODO this was for the PerfectLinks
+    configFile >> messageCount; // This is for URB + FIFO
     configFile.close();
 
-    bool isReceiver = (myId == receiverId);
-    std::cout << "My ID: " << myId << (isReceiver ? " (Receiver)\n" : " (Sender)\n");
+    // bool isReceiver = (myId == receiverId);
+    std::cout << "My ID: " << myId << std::endl;// << (isReceiver ? " (Receiver)\n" : " (Sender)\n");
 
     // Step 2: Create and open the output file
     std::ofstream logFile(parser.outputPath());
@@ -219,172 +222,131 @@ int main(int argc, char **argv) {
     }
 
     for (auto& host : hosts) {
-    if (host.port < 2048) {
-        host.port = static_cast<uint16_t>((2048 + host.id <= std::numeric_limits<uint16_t>::max()) 
-                                    ? 2048 + host.id 
-                                    : std::numeric_limits<uint16_t>::max());
+        if (host.port < 2048) {
+            host.port = static_cast<uint16_t>((2048 + host.id <= std::numeric_limits<uint16_t>::max()) 
+                                        ? 2048 + host.id 
+                                        : std::numeric_limits<uint16_t>::max());
 
 
-        std::cout << "Host " << host.id << " had port below 2048. Reassigned to port " << host.port << std::endl;
+            std::cout << "Host " << host.id << " had port below 2048. Reassigned to port " << host.port << std::endl;
+        }
     }
-}
 
-// Populate addressToProcessId
-std::unordered_map<sockaddr_in, int, AddressHash, AddressEqual> updatedAddressToProcessId;
-for (const auto& host : hosts) {
-    struct sockaddr_in addr {};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(static_cast<uint16_t>(host.port));  // Ensure port uses uint16_t
+    // Populate addressToProcessId
+    std::unordered_map<sockaddr_in, int, AddressHash, AddressEqual> updatedAddressToProcessId;
+    std::unordered_map<int, sockaddr_in> updatedProcessIdToAddress;
+    std::vector<int> processIds;
+    for (const auto& host : hosts) {
+        struct sockaddr_in addr {};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(static_cast<uint16_t>(host.port));  // Ensure port uses uint16_t
 
-    if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) <= 0) {
-        std::cerr << "Invalid IP address for host: " << host.ip << std::endl;
+        if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) <= 0) {
+            std::cerr << "Invalid IP address for host: " << host.ip << std::endl;
+            exit(EXIT_FAILURE);
+        }
+
+        updatedAddressToProcessId[addr] = static_cast<int>(host.id);  // Ensure host.id fits the map type
+        updatedProcessIdToAddress[static_cast<int>(host.id)] = addr;
+        processIds.push_back(static_cast<int>(host.id));
+    }
+
+    std::cout << "Updated addressToProcessId and hosts table:" << std::endl;
+    for (const auto& [addr, processId] : updatedAddressToProcessId) {
+        char ipStr[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &addr.sin_addr, ipStr, sizeof(ipStr));
+        std::cout << "Process " << processId << " -> " << ipStr << ":" << ntohs(addr.sin_port) << std::endl;
+    }
+
+    // Bind the socket for the current process
+    struct sockaddr_in myAddr {};
+    myAddr.sin_family = AF_INET;
+    myAddr.sin_addr.s_addr = INADDR_ANY;
+    myAddr.sin_port = htons(static_cast<uint16_t>(hosts[myId - 1].port));  // Use updated port
+
+    std::cout << "Process " << myId << " binding to port " << ntohs(myAddr.sin_port) << std::endl;
+
+    if (bind(sockfd, reinterpret_cast<struct sockaddr*>(&myAddr), sizeof(myAddr)) < 0) {
+        perror("Bind failed");
+        close(sockfd);
         exit(EXIT_FAILURE);
     }
 
-    updatedAddressToProcessId[addr] = static_cast<int>(host.id);  // Ensure host.id fits the map type
-}
+    std::cout << "Socket successfully bound for Process " << myId << " at port " << ntohs(myAddr.sin_port) << std::endl;
 
-std::cout << "Updated addressToProcessId and hosts table:" << std::endl;
-for (const auto& [addr, processId] : updatedAddressToProcessId) {
-    char ipStr[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &addr.sin_addr, ipStr, sizeof(ipStr));
-    std::cout << "Process " << processId << " -> " << ipStr << ":" << ntohs(addr.sin_port) << std::endl;
-}
+    // Initialize the PerfectLinks object globally
+    PerfectLinks plInstance(sockfd, myAddr, static_cast<int>(myId));
+    plInstance.addressToProcessId = std::move(updatedAddressToProcessId);
+    pl = &plInstance;
 
-// Bind the socket for the current process
-struct sockaddr_in myAddr {};
-myAddr.sin_family = AF_INET;
-myAddr.sin_addr.s_addr = INADDR_ANY;
-myAddr.sin_port = htons(static_cast<uint16_t>(hosts[myId - 1].port));  // Use updated port
+    // Initialize URB
+    UniformReliableBroadcast urb(&plInstance, logFile, myAddr, static_cast<int>(myId), processIds);
+    urb.processIdToAddress = std::move(updatedProcessIdToAddress);
 
-std::cout << "Process " << myId << " binding to port " << ntohs(myAddr.sin_port) << std::endl;
+    // Assign URB to PerfectLinks
+    plInstance.urb = &urb;
 
-if (bind(sockfd, reinterpret_cast<struct sockaddr*>(&myAddr), sizeof(myAddr)) < 0) {
-    perror("Bind failed");
-    close(sockfd);
-    exit(EXIT_FAILURE);
-}
-
-std::cout << "Socket successfully bound for Process " << myId << " at port " << ntohs(myAddr.sin_port) << std::endl;
-
-// Initialize the PerfectLinks object globally
-PerfectLinks plInstance(sockfd, myAddr, logFile, static_cast<int>(myId));
-plInstance.addressToProcessId = std::move(updatedAddressToProcessId);
-pl = &plInstance;
+    // Use URB broadcast
+    for (int i = 1; i <= messageCount; ++i){
+        urb.broadcastMessage(i);
+    }
 
 
-    // // Configure and bind the socket to the specified address and port
-    // struct sockaddr_in myAddr {};
-    // myAddr.sin_family = AF_INET;
-    // myAddr.sin_port = htons(hosts[myId - 1].port);
-    // myAddr.sin_addr.s_addr = INADDR_ANY;
 
-    // std::cout << "Process " << myId << " binding to port " << ntohs(myAddr.sin_port) << std::endl;
-
-
-    // // Try to bind with the port above 10000
-    // int port = hosts[myId - 1].port;
-    // if (port < 1024) {
-    //     port = 1024 + static_cast<int>(myId);  // Start with 10000 if the assigned port is too low
-    //     myAddr.sin_port = htons(static_cast<uint16_t>(port));  // Update the port in the sockaddr_in struct
-    // }
-    // int bind_attempts = 0;
-
-    // while (bind(sockfd, reinterpret_cast<struct sockaddr*>(&myAddr), sizeof(myAddr)) < 0) {
-    //     perror("bind failed: trying next port");
-    //     bind_attempts++;
-        
-    //     if (bind_attempts > 100) {  // Limit the number of attempts
-    //         std::cerr << "Failed to bind after 100 attempts. Exiting." << std::endl;
-    //         close(sockfd);
-    //         exit(EXIT_FAILURE);
+    // if (myId == 1){
+    //     unsigned long receiverId = 2;
+    //     struct sockaddr_in receiverAddr = {};
+    //     receiverAddr.sin_family = AF_INET;
+    //     receiverAddr.sin_port = htons(hosts[receiverId - 1].port);
+    //     inet_pton(AF_INET, "127.0.0.1", &receiverAddr.sin_addr);
+    //     for (int i=0; i<messageCount; ++i){
+    //         pl->sendMessage(receiverAddr, {pl->myProcessId, i});
     //     }
-
-    //     // port++;  // Increment port and try again
-    //     myAddr.sin_port = htons(hosts[myId - 1].port);
+    // }else if (myId == 2){
+    //     unsigned long receiverId = 1;
+    //     struct sockaddr_in receiverAddr = {};
+    //     receiverAddr.sin_family = AF_INET;
+    //     receiverAddr.sin_port = htons(hosts[receiverId - 1].port);
+    //     inet_pton(AF_INET, "127.0.0.1", &receiverAddr.sin_addr);
+    //     for (int i=0; i<messageCount; ++i){
+    //         pl->sendMessage(receiverAddr, {pl->myProcessId, i});
+    //     }
     // }
 
-    // // Now update the hosts with the new port number
-    // hosts[myId - 1].port = ntohs(myAddr.sin_port);  // Update the port in the hosts list
+    std::vector<std::thread> sendThreads;  // Thread pool for sending messages
+    // Launch sender threads
+    for (int i = 0; i < 2; ++i) {
+        sendThreads.emplace_back(&PerfectLinks::sendWorker, pl);
+    }
 
-    // std::cout << "Updated hosts: Process " << myId << " is now using port " << ntohs(myAddr.sin_port) << std::endl;
+    std::vector<std::thread> receiverThreads;
+    for (int i = 0; i < 2; ++i) {
+        receiverThreads.emplace_back(&PerfectLinks::receive, pl);
+    }
 
-    // std::cout << "Socket bound to port " << ntohs(myAddr.sin_port) << std::endl;
-
-    // // // Initialize PerfectLinks with current process ID (myId) and log file
-    // // PerfectLinks pl(sockfd, myAddr, logFile, static_cast<int>(myId));
-
-    // // Initialize the PerfectLinks object globally
-    // PerfectLinks plInstance(sockfd, myAddr, logFile, static_cast<int>(myId));
-    // pl = &plInstance;  // Set the global pointer to the created PerfectLinks object
-
-    // std::cout << "Ports" << std::endl;
-    // for (const auto& host : hosts) {
-    //     sockaddr_in addr;
-    //     addr.sin_family = AF_INET;
-    //     addr.sin_port = htons(static_cast<uint16_t>(host.port)); // Explicitly cast port
-
-    //     // Try to bind with the port above 10000
-    //     int port = host.port;
-    //     if (port < 1024) {
-    //         port = 1024 + static_cast<int>(host.id);  // Start with 10000 if the assigned port is too low
-    //         addr.sin_port = htons(static_cast<uint16_t>(port));  // Update the port in the sockaddr_in struct
-    //     }
-
-    //     // Ensure host.ip is a string; inet_pton will fill addr.sin_addr
-    //     if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) <= 0) {
-    //         std::cerr << "Error: Invalid IP address format for host " << host.id << "\n";
-    //         continue;
-    //     }
-
-    //     std::cout << host.id << " " << host.port << std::endl;
-
-    //     // Explicitly cast host.id to int to avoid precision loss
-    //     plInstance.addressToProcessId[addr] = static_cast<int>(host.id);
-    // }
-
-    pl->startTime = std::chrono::high_resolution_clock::now();
+    std::vector<std::thread> deliveryThreads;
+    for (int i = 0; i < 2; ++i) {
+        deliveryThreads.emplace_back(&PerfectLinks::deliveryWorker, pl);
+    }
 
 
-    pl->packetSize = 8;  // Send larger batches, depending on the system's capacity
-    pl->isReceiver = isReceiver;
-
-    if (isReceiver) {
-        std::vector<std::thread> receiverThreads;
-        for (int i = 0; i < 3; ++i) {
-            receiverThreads.emplace_back(&PerfectLinks::receiveMessages, pl);
-        }
-
-        std::vector<std::thread> deliveryThreads;
-        for (int i = 0; i < 2; ++i) {
-            deliveryThreads.emplace_back(&PerfectLinks::deliveryWorker, pl);
-        }
-
-        for (auto &thread : receiverThreads) {
-            if (thread.joinable()) {
-                thread.join();
-            }
-        }
-
-        for (auto &thread : deliveryThreads) {
-            if (thread.joinable()) {
-                thread.join();
-            }
+    for (auto &thread : sendThreads) {
+        if (thread.joinable()) {
+            thread.join();
         }
     }
-    else {
-            // Sender logic
-            std::thread receiverThread(&PerfectLinks::receiveAcknowledgments, pl);
 
-            struct sockaddr_in receiverAddr = {};
-            receiverAddr.sin_family = AF_INET;
-            receiverAddr.sin_port = htons(hosts[receiverId - 1].port);
-            inet_pton(AF_INET, "127.0.0.1", &receiverAddr.sin_addr);
-
-            pl->startSending(receiverAddr, messageCount);
-
-            receiverThread.join();  // Keep listening for acks
+    for (auto &thread : receiverThreads) {
+        if (thread.joinable()) {
+            thread.join();
         }
+    }
+
+    for (auto &thread : deliveryThreads) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
 
     return 0;
 }
