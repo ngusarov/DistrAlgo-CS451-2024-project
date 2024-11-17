@@ -34,7 +34,7 @@ public:
     void broadcastMessage(int messageId);
     void notifyDelivery(int origProcId, int messageId);
     void urbDeliver(int origProcId, int messageId);
-    void fifoDeliver(int origProcId);
+    void fifoDeliver(int origProcId, int maxMessageId);
 
 public:
     PerfectLinks* pl;

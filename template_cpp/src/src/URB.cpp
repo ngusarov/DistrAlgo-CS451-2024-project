@@ -57,39 +57,48 @@ void UniformReliableBroadcast::notifyDelivery(int origProcId, int messageId) {
 }
 
 void UniformReliableBroadcast::urbDeliver(int origProcId, int messageId) {
+    int lastFifoDelivered;
     {
         std::lock_guard<std::mutex> fifoLock(fifoDelivMutex);
-        std::lock_guard<std::mutex> urbLock(urbDelivMutex);
+        lastFifoDelivered = fifoDelivered[origProcId];
+    }    
 
-        int lastFifoDelivered = fifoDelivered[origProcId];
+    {
+        std::lock_guard<std::mutex> urbLock(urbDelivMutex);   
         auto& segments = urbDelivered[origProcId].getSegments();
 
-        if (messageId == lastFifoDelivered + 1){
-            fifoDeliver(origProcId);
+        // Проверка FIFO порядка и доставка сообщений
+        if (messageId == lastFifoDelivered + 1) {
+            fifoDeliver(origProcId, messageId);  // Доставить текущее сообщение
 
+            // Проверяем второй сегмент
             auto it = segments.begin();
-            auto next = std::next(it);
-            if (next != segments.end() && next->first == lastFifoDelivered + 2) {
-                // Recursively handle the second segment
-                for (int i = next->first; i <= next->second; ++i){
-                    fifoDeliver(origProcId);
+            if (it != segments.end()) {
+                auto next = std::next(it);
+                if (next != segments.end() && next->first == fifoDelivered[origProcId] + 1) {
+                    // Доставить все сообщения из второго сегмента
+                    fifoDeliver(origProcId, next->second);
                 }
             }
         }
 
+        // Добавляем сообщение в urbDelivered
         urbDelivered[origProcId].addMessage(messageId);
     }
 }
 
-void UniformReliableBroadcast::fifoDeliver(int origProcId) {
+void UniformReliableBroadcast::fifoDeliver(int origProcId, int maxMessageId) {
     {    
         std::lock_guard<std::mutex> fifoLock(fifoDelivMutex);
         std::lock_guard<std::mutex> logLock(logMutex);
-        
-        ++fifoDelivered[origProcId];
-        logFile << "d " + std::to_string(origProcId) + " " + std::to_string(fifoDelivered[origProcId]) + "\n";
+
+        for (int msgId = fifoDelivered[origProcId] + 1; msgId <= maxMessageId; ++msgId) {
+            fifoDelivered[origProcId] = msgId;
+            logFile << "d " + std::to_string(origProcId) + " " + std::to_string(msgId) + "\n";
+        }
     }
 }
+
 
 
 void UniformReliableBroadcast::reBroadcast(int senderProcessId, int origProcId, int messageId) {
