@@ -16,11 +16,6 @@ UniformReliableBroadcast::UniformReliableBroadcast(PerfectLinks* pl, std::ofstre
         throw std::overflow_error("Too many processes, exceeds int capacity");
     }
 
-    // Initialize sendPointer for all addresses in addressToProcessId
-    for (int processId : allProcessIds) {
-        fifoDelivered[processId] = 0;
-        urbDelivered[processId].addMessage(0);
-    }
 }
 
 void UniformReliableBroadcast::broadcastMessage(int messageId) {
@@ -58,39 +53,19 @@ void UniformReliableBroadcast::notifyDelivery(int origProcId, int messageId) {
 
 void UniformReliableBroadcast::urbDeliver(int origProcId, int messageId) {
     {
-        std::lock_guard<std::mutex> fifoLock(fifoDelivMutex);
         std::lock_guard<std::mutex> urbLock(urbDelivMutex);
 
-        int lastFifoDelivered = fifoDelivered[origProcId];
-        auto& segments = urbDelivered[origProcId].getSegments();
-
-        if (messageId == lastFifoDelivered + 1){
-            fifoDeliver(origProcId);
-
-            auto it = segments.begin();
-            auto next = std::next(it);
-            if (next != segments.end() && next->first == lastFifoDelivered + 2) {
-                // Recursively handle the second segment
-                for (int i = next->first; i <= next->second; ++i){
-                    fifoDeliver(origProcId);
-                }
-            }
-        }
+        // Ensure the message hasn't been URB-delivered yet
+        if (urbDelivered[origProcId].find(messageId)) return;
 
         urbDelivered[origProcId].addMessage(messageId);
     }
-}
 
-void UniformReliableBroadcast::fifoDeliver(int origProcId) {
-    {    
-        std::lock_guard<std::mutex> fifoLock(fifoDelivMutex);
+    {
         std::lock_guard<std::mutex> logLock(logMutex);
-        
-        ++fifoDelivered[origProcId];
-        logFile << "d " + std::to_string(origProcId) + " " + std::to_string(fifoDelivered[origProcId]) + "\n";
+        logFile << "d " + std::to_string(origProcId) + " " + std::to_string(messageId) + "\n";
     }
 }
-
 
 void UniformReliableBroadcast::reBroadcast(int senderProcessId, int origProcId, int messageId) {
     sockaddr_in destAddr;
