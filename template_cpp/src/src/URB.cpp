@@ -21,17 +21,20 @@ UniformReliableBroadcast::UniformReliableBroadcast(PerfectLinks* pl, std::ofstre
         fifoDelivered[processId] = 0;
         urbDelivered[processId].addMessage(0);
     }
+
+    windowSize = 100;  // Set the window size
+
+    logBufferThreshold = 1000;  // Set the log buffer threshold
 }
 
 void UniformReliableBroadcast::broadcastMessage(int messageId) {
     {
-        std::lock_guard<std::mutex> logLock(logMutex);
-        logFile << "b " + std::to_string( messageId) + "\n";
+        std::lock_guard<std::mutex> logBufferLock(logBufferMutex);
+        logBuffer.push_back("b " + std::to_string(messageId) + "\n");
+        if (logBuffer.size() >= logBufferThreshold) {
+            flushLogBuffer();
+        }
     }
-
-    // // Self-acknowledge and deliver the message
-    // pl->acknowledgeMessage(myAddr,  myProcessId, messageId);
-    // pl->deliverMessage(myProcessId, myProcessId, messageId, false);
 
     sockaddr_in destAddr;
     for (const auto& procId : allProcessIds) {
@@ -41,16 +44,32 @@ void UniformReliableBroadcast::broadcastMessage(int messageId) {
     }
 }
 
+void UniformReliableBroadcast::broadcastManyMessages(int messageId) {
+        
+    logBuffer.push_back("b " + std::to_string(messageId) + "\n");
+
+    sockaddr_in destAddr;
+    for (const auto& procId : allProcessIds) {
+        if (procId == myProcessId) continue;  // Skip self
+        destAddr = processIdToAddress[procId];
+        pl->sendManyMessages(destAddr, {myProcessId, messageId});
+    }
+}
+
+
 void UniformReliableBroadcast::notifyDelivery(int origProcId, int messageId) {
     std::lock_guard<std::mutex> plLock(plDelivCountMutex);
 
     // Increment or initialize the plDeliveredCount for this message
     auto& count = plDeliveredCount[{origProcId, messageId}];
-    count++;
+    count++; // TODO does it actually increment?
 
-    std::cout << "{"<<origProcId << ","<< messageId<<"}" << " count " << count << "/" << numOfProcesses << std::endl;
+    std::stringstream ss;
+    ss << "{" << origProcId << "," << messageId << "} count " 
+    << (count + 1) << "/" << numOfProcesses << std::endl;
+    std::cout << ss.str();
 
-    if (count >= numOfProcesses-1) {  // If all processes have delivered
+    if (count + 1 >= numOfProcesses/2+1) {  // If majority acked (one process has always acked by default - the sender)
         plDeliveredCount.erase({origProcId, messageId});
         urbDeliver(origProcId, messageId);
     }
@@ -66,35 +85,45 @@ void UniformReliableBroadcast::urbDeliver(int origProcId, int messageId) {
     {
         std::lock_guard<std::mutex> urbLock(urbDelivMutex);   
         auto& segments = urbDelivered[origProcId].getSegments();
-
-        // Проверка FIFO порядка и доставка сообщений
         if (messageId == lastFifoDelivered + 1) {
-            fifoDeliver(origProcId, messageId);  // Доставить текущее сообщение
-
-            // Проверяем второй сегмент
+            fifoDeliver(origProcId, messageId);
             auto it = segments.begin();
             if (it != segments.end()) {
                 auto next = std::next(it);
                 if (next != segments.end() && next->first == fifoDelivered[origProcId] + 1) {
-                    // Доставить все сообщения из второго сегмента
                     fifoDeliver(origProcId, next->second);
                 }
             }
         }
-
-        // Добавляем сообщение в urbDelivered
         urbDelivered[origProcId].addMessage(messageId);
     }
+
+    // Broadcast the next message if this process is the origin
+    if (origProcId == myProcessId) {
+        int nextMessageId;
+        {
+            std::lock_guard<std::mutex> pendingLock(pendingMessagesMutex);
+            nextMessageId = pendingMessages.getNextMessage();  // Fetch the next message
+        }
+        if (nextMessageId != -1) {
+            broadcastMessage(nextMessageId);
+        }
+    }
 }
+
 
 void UniformReliableBroadcast::fifoDeliver(int origProcId, int maxMessageId) {
     {    
         std::lock_guard<std::mutex> fifoLock(fifoDelivMutex);
-        std::lock_guard<std::mutex> logLock(logMutex);
+        std::lock_guard<std::mutex> logBufferLock(logBufferMutex);
 
         for (int msgId = fifoDelivered[origProcId] + 1; msgId <= maxMessageId; ++msgId) {
             fifoDelivered[origProcId] = msgId;
-            logFile << "d " + std::to_string(origProcId) + " " + std::to_string(msgId) + "\n";
+            logBuffer.push_back("d " + std::to_string(origProcId) + " " + std::to_string(msgId) + "\n");
+
+            if (logBuffer.size() >= logBufferThreshold) {
+                flushLogBuffer();
+            }
         }
     }
 }
@@ -105,7 +134,18 @@ void UniformReliableBroadcast::reBroadcast(int senderProcessId, int origProcId, 
     sockaddr_in destAddr;
     for (const auto& procId : allProcessIds) {
         if (procId == myProcessId || procId == senderProcessId) continue;  // Skip self and sender
+        if (procId == origProcId || pl->deliveredMessages[procId][origProcId].find(messageId)) continue;  // Skip origin and from whom delivered
         destAddr = processIdToAddress[procId];
         pl->sendMessage(destAddr, {origProcId, messageId});
     }
+}
+
+
+void UniformReliableBroadcast::flushLogBuffer() {
+    std::lock_guard<std::mutex> logLock(logMutex); // Ensure exclusive access to the file
+    for (const auto& logEntry : logBuffer) {
+        logFile << logEntry;
+    }
+    logBuffer.clear(); // Clear the buffer after flushing
+    logFile.flush();   // Ensure immediate write to the file
 }

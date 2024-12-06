@@ -25,117 +25,214 @@ PerfectLinks::PerfectLinks(int sockfd, const struct sockaddr_in &myAddr, int myP
         flagShrinkQueue = false;
 
         packetSize = 8;  // TODO Send larger batches, depending on the system's capacity
-        windowSize = 10000;  // TODO reconsider size : VIA OPTIMIZATION with time measurements
+
         // TODO
         // In the case of URB, we deliver only upon sending a message back (unlike in simple links). So this should be made a priority
         
+        numOfNewAcks = 0;
 
-        // Initialize sendPointer for all addresses in addressToProcessId
-        for (const auto& [addr, processId] : addressToProcessId) {
-            sendPointer[addr] = {0, -1};  // Initialize send pointer as {index, message ID} = {0, -1}
-        }
-
-        startTime = std::chrono::high_resolution_clock::now();
+        numOfNewAcksThreshold = 100;  // Threshold for cleaning the queue
         
+      
+        // minSeqNum = 1;
+        startTime = std::chrono::high_resolution_clock::now();
 }
 
+void PerfectLinks::sendManyMessages(const sockaddr_in &destAddr, std::pair<int, int> message) {
+    Message msg = {message.second, message.first, destAddr};  // Create the message structure
+
+    messageMap[msg] = 0;  // Initialize send count
+    messageSet.insert({msg, 0});  // Add to the set with initial send count
+
+    // Prepare a string stream for logging
+    std::ostringstream logStream;
+    logStream << "For " << addressToProcessId[destAddr]
+              << " Put {" << message.first << ", " << message.second << "} "
+              << "in the queue. Current queue size: " << messageSet.size() << std::endl;
+
+    // Output the accumulated logs
+    std::cout << logStream.str();
+}
+
+
 void PerfectLinks::sendMessage(const sockaddr_in &destAddr, std::pair<int, int> message) {
-    {
-        std::unique_lock<std::mutex> subQueueLock(subQueueMutex);
-        subQueue[destAddr].push_back(message);
+    Message msg = {message.second, message.first, destAddr};  // Create the message structure
+
+    std::unique_lock<std::mutex> queueLock(queueMutex);
+
+    if (messageMap.find(msg) == messageMap.end()) {
+        // Add to the map and the set
+        messageMap[msg] = 0;  // Initialize send count
+        messageSet.insert({msg, 0});  // Add to the set with initial send count
+        
+        // Prepare a string stream for logging
+        std::ostringstream logStream;
+        logStream << "For " << addressToProcessId[destAddr]
+                << " Put {" << message.first << ", " << message.second << "} "
+                << "in the queue. Current queue size: " << messageSet.size() << std::endl;
+
+        // Output the accumulated logs
+        std::cout << logStream.str();
     }
-    std::cout << "For " << addressToProcessId[destAddr] <<  " Put " << message.first << " " << message.second << " in the queue"<< std::endl;
 }
 
 
 void PerfectLinks::sendWorker() {
+
     while (running) {
-        std::unordered_map<sockaddr_in, std::string, AddressHash, AddressEqual> packetsToSend;
+        std::pair<sockaddr_in, std::string> onePacketToSend;
+
+        std::vector<MessageMetadata> reinsertionBuffer;
+
 
         {
-            std::unique_lock<std::mutex> pointerLock(pointerMutex);
-            std::unique_lock<std::mutex> subQueueLock(subQueueMutex);
+            std::unique_lock<std::mutex> queueLock(queueMutex);
 
-            for (auto& [destAddr, queue] : subQueue) {
-                // Prepare packet for the current destination
-                std::string combinedPacket = "m";  // Packet starts with "m" for message type
-                size_t startIndex = sendPointer[destAddr].first;
-                size_t i;
+            for (auto it = messageSet.begin(); it != messageSet.end();) {
+                const Message& msg = it->message;
+                int numSendings = it->numOfSendings;
+                int seqNum = msg.messageId;
+                const sockaddr_in& destAddr = msg.address;
 
-                for (i = 0; i < packetSize && startIndex + i < windowSize && startIndex + i < queue.size(); ++i) {
-                    combinedPacket += std::to_string(queue[startIndex + i].first) + ":" + 
-                                      std::to_string(queue[startIndex + i].second) + ";";
+                // std::cout << "Curr size of queue " << messageSet.size() << std::endl;
+                // std::cout << "Considering message " << msg.initSenderId << " " << seqNum << " for " << ntohs(destAddr.sin_port) << std::endl;
+                
+                // Skip messages outside the sliding window // TODO: reconsider
+                // if (numSendings > 10){
+                //     {        
+                //         std::unique_lock<std::mutex> ackLock(acknowledgedMessagesMutex);       
+                //         auto& ackMap = acknowledgedMessages[destAddr];
+                //         if (ackMap[origProcId].find(seqNum)) {
+                //             flagShrinkQueue = true; // Mark for cleanup
+                //             break;
+                //         }
+                //     }
+                // }
+                if (numOfNewAcks > numOfNewAcksThreshold){
+                    flagShrinkQueue = true; // Mark for cleanup
+                    break;
+                }
+                else if (std::next(it) == messageSet.end()){
+                    flagShrinkQueue = true; // Mark for cleanup
                 }
 
-                ++i;
+                // Add message to the packet for the destination
+                auto& packetQueue = packetsToSend[destAddr];
+                if (std::none_of(packetQueue.begin(), packetQueue.end(),
+                                 [msg](const std::pair<int, int>& m) {
+                                     return m.first == msg.initSenderId && m.second == msg.messageId;
+                                 })) {
+                    packetQueue.emplace_back(msg.initSenderId, seqNum);
 
-                // std::cout << "StartIndex " << startIndex << " position i: "<< i << std::endl;
+                    // Increment sending counter and update the set
+                    MessageMetadata updatedMetadata = *it;
+                    updatedMetadata.numOfSendings++;
 
-                // Update sendPointer for next cycle
-                if (startIndex + i < windowSize && startIndex + i < queue.size()) {
-                    sendPointer[destAddr] = {startIndex + packetSize, queue[startIndex + packetSize].second};
-                } else {
-                    flagShrinkQueue = true;
-                    sendPointer[destAddr] = {0, queue.empty() ? -1 : queue.front().second};
+                    // std::cout << "Included " << msg.initSenderId << " " << seqNum << " for "
+                    //           << ntohs(destAddr.sin_port) << "; Num sendings: " << numSendings << std::endl;
+
+                    // Stop forming packets if the current destination packet is full
+                    if (packetQueue.size() >= packetSize) {
+                        std::string packet = "m";
+                        for (const auto& m : packetQueue) {
+                            packet += std::to_string(m.first) + ":" + std::to_string(m.second) + ";";
+                        }
+                        packetQueue.clear();  // Clear the packet queue after forming the packet
+                        onePacketToSend = {destAddr, packet};
+
+                        break;
+                    }
+
+                    it = messageSet.erase(it);
+                    reinsertionBuffer.push_back(updatedMetadata);
                 }
 
-                if (combinedPacket.size() > 2) {  // Only add non-empty packets
-                    packetsToSend[destAddr] = std::move(combinedPacket);
-                }
+                ++it;
             }
-        }  // Release locks here
 
-        // Send packets outside the critical section
-        for (const auto& [destAddr, packet] : packetsToSend) {
+            // Reinsert updated elements into the set after iteration
+            for (const auto& metadata : reinsertionBuffer) {
+                messageSet.insert(metadata);
+            }
+            reinsertionBuffer.clear();  // Clear the buffer
+        }
+
+        // Send the formed packet outside the critical section
+        if (!onePacketToSend.second.empty()) {
+            const sockaddr_in& destAddr = onePacketToSend.first;
+            const std::string& packet = onePacketToSend.second;
+
             ssize_t sent_bytes = sendto(sockfd, packet.c_str(), packet.size(), 0,
                                         reinterpret_cast<const struct sockaddr*>(&destAddr), sizeof(destAddr));
             if (sent_bytes < 0) {
                 perror("sendto failed");
             } else {
-                auto end = std::chrono::high_resolution_clock::now();
-                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - startTime);
-                std::cout << "Packet sent to " << ntohs(destAddr.sin_port) << ": " << packet
-                          << " Time " << duration.count() << " ms" << std::endl;
+                std::stringstream ss;
+                ss << "Packet sent to " << addressToProcessId[destAddr] << ": " << packet << std::endl;
+                std::cout << ss.str();
             }
         }
 
-        // Shrink the queue if flagShrinkQueue is set
+        // Shrink the queue if necessary
         if (flagShrinkQueue) {
-            std::unique_lock<std::mutex> pointerLock(pointerMutex);
-            std::unique_lock<std::mutex> subQueueLock(subQueueMutex);
+            std::unique_lock<std::mutex> queueLock(queueMutex);
+            std::unique_lock<std::mutex> deliveryLock(deliveryMutex);
+            std::unique_lock<std::mutex> ackLock(acknowledgedMessagesMutex);
 
-            for (auto& [destAddr, queue] : subQueue) {
-                auto& ackMap = acknowledgedMessages[destAddr];
-                auto it = queue.begin();
+            numOfNewAcks = 0;
 
-                while (it != queue.end()) {
-                    int origProcId = it->first;
-                    int messageId = it->second;
+            // Prepare a string stream for logging
+            std::ostringstream logStream;
 
-                    if (ackMap[origProcId].find(messageId)) {
-                        if (static_cast<size_t>(it - queue.begin()) == sendPointer[destAddr].first) {
-                            sendPointer[destAddr].first = static_cast<size_t>((it + 1) - queue.begin());
-                            sendPointer[destAddr].second = (sendPointer[destAddr].first < queue.size()) 
-                                                            ? queue[sendPointer[destAddr].first].second 
-                                                            : -1;
-                        }
-                        std::cout << "Erasing " << it->first << " " << it->second << " q size " << queue.size()-1 << std::endl;
-                        it = queue.erase(it);
-                    } else {
-                        ++it;
-                    }
+            // Log the initial queue size
+            logStream << "Shrinking the queue. Initial size: " << messageSet.size() << std::endl;
 
+            for (auto it = messageSet.begin(); it != messageSet.end();) {
+                const Message& msg = it->message;
+
+                auto& ackMap = acknowledgedMessages[msg.address];
+                auto& delivMap = deliveredMessages[ addressToProcessId[msg.address] ];
+
+                // Remove messages fully acknowledged
+                if (ackMap[msg.initSenderId].find(msg.messageId) || delivMap[msg.initSenderId].find(msg.messageId)) {
+                    logStream << "Deleting message: {"
+                            << msg.initSenderId << ", "
+                            << msg.messageId << "} for port "
+                            << addressToProcessId[msg.address]
+                            << "; Queue size before deletion: " << messageSet.size() << std::endl;
+
+                    messageMap.erase(msg);  // Remove from map
+                    it = messageSet.erase(it);  // Remove from set
+
+                    logStream << "Queue size after deletion: " << messageSet.size() << std::endl;
+                } else {
+                    ++it;
                 }
             }
 
+            // Update minSeqNum
+            if (!messageSet.empty()) {
+                minSeqNum = messageSet.begin()->message.messageId;
+            } else {
+                minSeqNum = 0;
+            }
+
             flagShrinkQueue = false;
+
+            // Output the accumulated logs
+            std::cout << logStream.str();
         }
 
-        std::this_thread::sleep_for(std::chrono::microseconds(1));  // Avoid busy waiting
+
+        std::this_thread::sleep_for(std::chrono::nanoseconds(1));  // Avoid busy waiting
     }
 }
 
 
+
+
+
+
 //- ------------------------------------------------------------------------------------------------------------
 //- ------------------------------------------------------------------------------------------------------------
 //- ------------------------------------------------------------------------------------------------------------
@@ -148,7 +245,7 @@ void PerfectLinks::sendWorker() {
 //- ------------------------------------------------------------------------------------------------------------
 
 
-void PerfectLinks::deliveryWorker() {
+void PerfectLinks::ackWorker() {
     while (running || !receivedQueue.empty()) {
         std::unordered_map<sockaddr_in, std::string, AddressHash, AddressEqual> ackPackets;
 
@@ -168,10 +265,10 @@ void PerfectLinks::deliveryWorker() {
                     it = messages.erase(it);
                     count++;
 
-                    // Reduce count and reinsert if still relevant
-                    if (receptionCount / 10 > 0) {
-                        toReinsert.emplace_back(origPair, receptionCount / 10);
-                    }
+                    // // Reduce count and reinsert if still relevant
+                    // if (receptionCount / 10 > 0) {
+                    //     toReinsert.emplace_back(origPair, receptionCount / 10);
+                    // }
                 }
 
                 // Reinsert messages with reduced reception counts
@@ -194,8 +291,7 @@ void PerfectLinks::deliveryWorker() {
             if (sent_bytes < 0) {
                 perror("sendto failed (ack packet)");
             } else {
-                std::cout << "ACK to " << ntohs(srcAddr.sin_port)
-                          << ": " << combinedAck << std::endl;
+                std::cout << "ACK to " + std::to_string(addressToProcessId[srcAddr]) + ": " + combinedAck.c_str() + "\n";
             }
         }
     }
@@ -258,8 +354,11 @@ void PerfectLinks::receive() {
 
                     receivedQueueCv.notify_one();
 
-                    std::cout << "Received m:" << senderProcessId << " "<< messageId
-                              << " T=" << duration.count() << " ms" << std::endl;
+
+                    std::stringstream ss;
+                    ss << "From " <<  senderProcessId << " Received m:" << origProcId << " " << messageId
+                    << " T=" << duration.count() << " ms" << std::endl;
+                    std::cout << ss.str();
                 }
 
                 deliverMessage(senderProcessId, origProcId, messageId, true);
@@ -274,8 +373,10 @@ void PerfectLinks::receive() {
 
                 auto end = std::chrono::high_resolution_clock::now();
                 auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - startTime);
-                std::cout << "Ack a:" << origProcId<< " " << messageId
-                          << " T=" << duration.count() << " ms" << std::endl;
+                std::stringstream ss;
+                ss << "From " <<  senderProcessId << " Ack a:" << origProcId << " " << messageId
+                << " T=" << duration.count() << " ms" << std::endl;
+                std::cout << ss.str();
 
                 acknowledgeMessage(srcAddr, origProcId, messageId);
                 deliverMessage(senderProcessId, origProcId, messageId, false);
@@ -290,6 +391,7 @@ void PerfectLinks::acknowledgeMessage(sockaddr_in srcAddr, int origProcId, int m
         std::unique_lock<std::mutex> ackLock(acknowledgedMessagesMutex);
         if (!acknowledgedMessages[srcAddr][origProcId].find(messageId)) {
             acknowledgedMessages[srcAddr][origProcId].addMessage(messageId);
+            numOfNewAcks++;
         }
     }
 }

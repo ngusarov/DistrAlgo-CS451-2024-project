@@ -43,7 +43,7 @@ struct AddressEqual {
     }
 };
 
-struct MessageComparator {
+struct MessageComparator_recQueue {
     bool operator()(const std::tuple<std::pair<int, int>, int>& a,
                     const std::tuple<std::pair<int, int>, int>& b) const {
         if (std::get<1>(a) != std::get<1>(b)) {
@@ -54,6 +54,44 @@ struct MessageComparator {
 };
 
 
+// Message struct
+struct Message {
+    int messageId;
+    int initSenderId;
+    sockaddr_in address;
+
+    bool operator==(const Message& other) const {
+        return messageId == other.messageId &&
+               initSenderId == other.initSenderId &&
+               memcmp(&address, &other.address, sizeof(sockaddr_in)) == 0;
+    }
+};
+
+// Hash function for Message (for unordered_map)
+struct MessageHash {
+    size_t operator()(const Message& msg) const {
+        size_t h1 = std::hash<int>()(msg.messageId);
+        size_t h2 = std::hash<int>()(msg.initSenderId);
+        size_t h3 = std::hash<uint32_t>()(msg.address.sin_addr.s_addr);
+        size_t h4 = std::hash<uint16_t>()(msg.address.sin_port);
+        return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3);
+    }
+};
+
+// Metadata struct for multiset
+struct MessageMetadata {
+    Message message;
+    int numOfSendings;
+
+    bool operator<(const MessageMetadata& other) const {
+        if (numOfSendings != other.numOfSendings) {
+            return numOfSendings < other.numOfSendings;
+        }
+        return std::tie(message.messageId, message.initSenderId, message.address.sin_port) <
+               std::tie(other.message.messageId, other.message.initSenderId, other.message.address.sin_port);
+    }
+};
+
 
 
 
@@ -62,9 +100,10 @@ public:
     PerfectLinks(int sockfd, const sockaddr_in &myAddr, int myProcessId);
 
     void sendMessage(const sockaddr_in &destAddr, std::pair<int, int> message);
+    void sendManyMessages(const sockaddr_in &destAddr, std::pair<int, int> message);
     void sendWorker();
     void receive();
-    void deliveryWorker();
+    void ackWorker();
     void stopDelivering();  // To stop receiving/sending
 
     void acknowledgeMessage(sockaddr_in srcAddr, int origProcId, int messageId);
@@ -73,7 +112,6 @@ public:
     UniformReliableBroadcast* urb; // Pointer to URB instance
 
     unsigned long packetSize;  // Add packet size as a public member variable
-    unsigned long windowSize;  // Add packet size as a public member variable
 
 public:
     int sockfd;  // The socket file descriptor used for communication
@@ -85,15 +123,19 @@ public:
     std::atomic<bool> running{true};  // Flag to indicate if the deliver thread should keep running
 
     // Data structures for sending messages
-    std::mutex pointerMutex;  // Mutex for protecting sendPointer and subQueue operations
-    std::unordered_map<sockaddr_in, std::pair<size_t, int>, AddressHash, AddressEqual> sendPointer;  // {recepientAddr, {index, message ID}}
-    bool flagShrinkQueue;
-    std::mutex subQueueMutex;
-    std::unordered_map<sockaddr_in, std::deque<std::pair<int, int>>, AddressHash, AddressEqual> subQueue;  // {recepientAddr, [...{origProcID, messageID}...]}
+    std::mutex queueMutex;  // Protects access to messageMap and messageSet
+    std::unordered_map<Message, int, MessageHash> messageMap;  // Lookup table for messages
+    std::multiset<MessageMetadata> messageSet;  // Sorted by numOfSendings
+    std::unordered_map<sockaddr_in, std::deque<std::pair<int, int>>, AddressHash, AddressEqual> packetsToSend;  // {destAddr : [{origProcID, messageID} ...]}
+    std::atomic<int> minSeqNum;  // Lowest sequence number in the sliding window
+    std::atomic<bool> flagShrinkQueue{false};  // Indicates if queue cleanup is needed
+
 
     // for cleaning the subQueue
     std::mutex acknowledgedMessagesMutex;
     std::unordered_map<sockaddr_in, std::unordered_map<int, MessageSegments>, AddressHash, AddressEqual> acknowledgedMessages; // {recepientAddr :  { origProcID : Segments} ... }
+    std::atomic<int> numOfNewAcks;
+    std::atomic<int> numOfNewAcksThreshold;
 
     // Data structures for receiving messages
     std::mutex deliveryMutex;  // Protects the deliveredMessages map
@@ -101,7 +143,7 @@ public:
     
     std::mutex receivedQueueMutex;
     std::condition_variable receivedQueueCv;
-    std::unordered_map<sockaddr_in, std::set<std::tuple<std::pair<int, int>, int>, MessageComparator>, AddressHash, AddressEqual> receivedQueue; // recepientAddr : [...<<origProcID, messageID>, counts>...]
+    std::unordered_map<sockaddr_in, std::set<std::tuple<std::pair<int, int>, int>, MessageComparator_recQueue>, AddressHash, AddressEqual> receivedQueue; // recepientAddr : [...<<origProcID, messageID>, counts>...]
 
     bool flagSleep;
     std::condition_variable sleepCv;  // Condition variable for sleeping

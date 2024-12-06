@@ -47,69 +47,10 @@ static void stop(int) {
     std::cout << "Writing output.\n";
 
     if (urb != nullptr) {
-        urb->logFile.flush();
+        std::cout << urb->logBuffer.size() << " messages left in the buffer.\n";
+        urb->flushLogBuffer();
     }
-    
-    // if (pl != nullptr) {
-
-    //     // Flushing logs based on whether it's a sender or receiver
-    //     std::lock_guard<std::mutex> logLock(pl->logMutex);
-    //     pl->running = false;
-
-    //     // Join the log threads and flush queues based on process type (sender/receiver)
-    //     if (pl->isReceiver) {
-    //         const size_t batchSize = 500;  // Increase batch size to handle larger volumes efficiently
-    //         std::string logBatch;
-
-    //         while (!pl->receiverLogQueue.empty()) {
-    //             {
-    //                 std::unique_lock<std::mutex> logLock(pl->logMutex);
-    //                 pl->logCv.wait(logLock, [&]() { return !pl->receiverLogQueue.empty(); });
-
-    //                 while (!pl->receiverLogQueue.empty() && logBatch.size() < batchSize) {
-    //                     auto logEntry = pl->receiverLogQueue.front();
-    //                     pl->receiverLogQueue.pop_front();
-
-    //                     // Accumulate log entries for delivery: "d <senderProcessId> <messageId>"
-    //                     logBatch += "d " + std::to_string(logEntry.first) + " " + std::to_string(logEntry.second) + "\n";
-    //                 }
-    //             }
-
-    //             // Write the entire batch to the log file in one operation
-    //             if (!logBatch.empty()) {
-    //                 pl->logFile << logBatch;
-    //                 pl->logFile.flush();  // Explicitly flush after writing the batch
-    //                 logBatch.clear();
-    //             }
-    //         }
-    //     } else {
-    //         const size_t batchSize = 500;  // Increase batch size to handle larger volumes efficiently
-
-    //         std::string logBatch;
-
-    //         while (!pl->doneLogging || !pl->senderLogQueue.empty()) {
-    //             {
-    //                 std::unique_lock<std::mutex> logLock(pl->logMutex);
-    //                 pl->logCv.wait(logLock, [&]() { return !pl->senderLogQueue.empty() || !pl->running; });
-
-    //                 while (!pl->senderLogQueue.empty() && logBatch.size() < batchSize) {
-    //                     int messageId = pl->senderLogQueue.front();
-    //                     pl->senderLogQueue.pop_front();
-
-    //                     // Accumulate log entries for broadcast
-    //                     logBatch += "b " + std::to_string(messageId) + "\n";
-    //                 }
-    //             }
-
-    //             // Write the entire batch to the log file in one operation
-    //             if (!logBatch.empty()) {
-    //                 pl->logFile << logBatch;
-    //                 pl->logFile.flush();  // Explicitly flush after writing the batch
-    //                 logBatch.clear();
-    //             }
-    //         }
-    //     }
-    // }
+    std::cout << "Finished writing" << std::endl;
 
     exit(0);  // Exit the program
 }
@@ -280,53 +221,40 @@ int main(int argc, char **argv) {
     pl = &plInstance;
 
     // Initialize URB
-    UniformReliableBroadcast urb(&plInstance, logFile, myAddr, static_cast<int>(myId), processIds);
-    urb.processIdToAddress = std::move(updatedProcessIdToAddress);
+    urb = new UniformReliableBroadcast(&plInstance, logFile, myAddr, static_cast<int>(myId), processIds);
+    urb->processIdToAddress = std::move(updatedProcessIdToAddress);
 
     // Assign URB to PerfectLinks
-    plInstance.urb = &urb;
+    plInstance.urb = urb;
 
-    // Use URB broadcast
-    for (int i = 1; i <= messageCount; ++i){
-        urb.broadcastMessage(i);
+    {
+        std::unique_lock<std::mutex> queueLock(pl->queueMutex);
+        std::lock_guard<std::mutex> logBufferLock(urb->logBufferMutex);
+        // Use URB broadcast // TODO Memory limitation won't allow to do it like this
+        for (int i = 1; i <= urb->windowSize; ++i){
+            urb->broadcastManyMessages(i);
+        }
     }
 
-
-
-    // if (myId == 1){
-    //     unsigned long receiverId = 2;
-    //     struct sockaddr_in receiverAddr = {};
-    //     receiverAddr.sin_family = AF_INET;
-    //     receiverAddr.sin_port = htons(hosts[receiverId - 1].port);
-    //     inet_pton(AF_INET, "127.0.0.1", &receiverAddr.sin_addr);
-    //     for (int i=0; i<messageCount; ++i){
-    //         pl->sendMessage(receiverAddr, {pl->myProcessId, i});
-    //     }
-    // }else if (myId == 2){
-    //     unsigned long receiverId = 1;
-    //     struct sockaddr_in receiverAddr = {};
-    //     receiverAddr.sin_family = AF_INET;
-    //     receiverAddr.sin_port = htons(hosts[receiverId - 1].port);
-    //     inet_pton(AF_INET, "127.0.0.1", &receiverAddr.sin_addr);
-    //     for (int i=0; i<messageCount; ++i){
-    //         pl->sendMessage(receiverAddr, {pl->myProcessId, i});
-    //     }
-    // }
-
+    // Initialize the pendingMessages for future broadcasts
+    if (urb->windowSize + 1 <= messageCount){
+        urb->pendingMessages.addSegment({urb->windowSize + 1, messageCount});  // Example range
+    }
+    
     std::vector<std::thread> sendThreads;  // Thread pool for sending messages
     // Launch sender threads
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 1; ++i) {
         sendThreads.emplace_back(&PerfectLinks::sendWorker, pl);
     }
 
     std::vector<std::thread> receiverThreads;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 1; ++i) {
         receiverThreads.emplace_back(&PerfectLinks::receive, pl);
     }
 
     std::vector<std::thread> deliveryThreads;
-    for (int i = 0; i < 2; ++i) {
-        deliveryThreads.emplace_back(&PerfectLinks::deliveryWorker, pl);
+    for (int i = 0; i < 1; ++i) {
+        deliveryThreads.emplace_back(&PerfectLinks::ackWorker, pl);
     }
 
 
@@ -348,5 +276,8 @@ int main(int argc, char **argv) {
         }
     }
 
+    delete urb;
+
     return 0;
 }
+

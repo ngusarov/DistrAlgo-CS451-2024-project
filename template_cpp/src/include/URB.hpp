@@ -32,9 +32,12 @@ public:
                 const struct sockaddr_in &myAddr, int myProcessId, const std::vector<int>& processIds);
 
     void broadcastMessage(int messageId);
+    void broadcastManyMessages(int messageId);
     void notifyDelivery(int origProcId, int messageId);
     void urbDeliver(int origProcId, int messageId);
     void fifoDeliver(int origProcId, int maxMessageId);
+    void reBroadcast(int senderProcessId, int origProcId, int messageId);
+    void flushLogBuffer();
 
 public:
     PerfectLinks* pl;
@@ -46,6 +49,13 @@ public:
 
     sockaddr_in myAddr;  // The address of this process
     int myProcessId;
+
+    // Window size for initial broadcast
+    int windowSize;
+
+    // Message segments for future broadcasts
+    std::mutex pendingMessagesMutex;
+    MessageSegments pendingMessages;
     
 
     std::vector<int> allProcessIds;
@@ -59,5 +69,9 @@ public:
     std::mutex plDelivCountMutex;
     std::unordered_map<std::pair<int, int>, int, PairHash> plDeliveredCount; // {origProcId, messageId} : counts ( < numOfProcesses)
 
-    void reBroadcast(int senderProcessId, int origProcId, int messageId);
+public:
+    std::vector<std::string> logBuffer; // Buffer for log messages
+    std::mutex logBufferMutex;         // Mutex to protect the buffer
+    size_t logBufferThreshold; // Threshold for flushing the buffer
+
 };

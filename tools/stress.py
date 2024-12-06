@@ -129,11 +129,16 @@ class Validation:
         global_delivered, 
         errors, 
         global_partial_delivered, 
-        last_delivered
+        last_delivered, 
+        processesInfo
     ):
         broadcast_count = 0
         local_delivered = set()  # Track delivered messages for the current process
         local_duplicates = 0     # Count of duplicates for this process
+        local_broadcasted = set()  # Track broadcasted messages for the current process
+        local_created_but_not_broadcasted = 0
+
+        is_correct = processesInfo[process_id].state == ProcessState.RUNNING
 
         with open(output_file, "r") as f:
             lines = f.readlines()
@@ -145,6 +150,7 @@ class Validation:
             if line.startswith("b "):  # Format: "b <message_id>"
                 parts = line.split()
                 msg_id = int(parts[1])
+                local_broadcasted.add(msg_id)
                 global_broadcasted.add((process_id, msg_id))
                 broadcast_count += 1
 
@@ -159,22 +165,38 @@ class Validation:
                     local_duplicates += 1
                 else:
                     local_delivered.add((sender_id, msg_id))
+                    global_delivered.add((sender_id, msg_id))
 
                 # Uniform Agreement: track processes delivering the message
                 global_partial_delivered[(sender_id, msg_id)].add(process_id)
 
-                # FIFO Check
-                if msg_id < last_delivered[process_id][sender_id]:
-                    errors["fifo_violation"] += 1
-
-                last_delivered[process_id][sender_id] = msg_id
+                # FIFO Check for correct processes
+                if is_correct:
+                    if msg_id < last_delivered[process_id][sender_id]:
+                        errors["fifo_violation"] += 1
+                    last_delivered[process_id][sender_id] = msg_id
 
         # Update the global error count for duplicates
-        errors["duplicated"] += local_duplicates
+        if is_correct:
+            errors["duplicated"] += local_duplicates
+
+        # Check for messages created but not broadcasted
+        for sender_id, msg_id in local_delivered:
+            if sender_id == process_id and msg_id not in local_broadcasted:
+                if is_correct:
+                    local_created_but_not_broadcasted += 1
+
+        errors["created_but_not_broadcasted"] += local_created_but_not_broadcasted
 
         # Ensure sufficient broadcasts
-        if broadcast_count < self.messages:
+        if is_correct and broadcast_count < self.messages:
             errors["not_broadcasted"] += (self.messages - broadcast_count)
+
+        # Check for messages broadcasted but not delivered by this process
+        if is_correct:
+            for process_id, msg_id in global_broadcasted:
+                if (process_id, msg_id) not in local_delivered and processesInfo[process_id].state == ProcessState.RUNNING:
+                    errors["broadcasted_but_not_delivered"] += 1
 
 
     def validate_all_outputs(self, logsDir, processesInfo, processes):
@@ -199,7 +221,7 @@ class Validation:
             output_file = os.path.join(logsDir, f"proc{pid:02d}.output")
             self.validate_output(
                 pid, output_file, global_broadcasted, global_delivered,
-                errors, global_partial_delivered, last_delivered
+                errors, global_partial_delivered, last_delivered, processesInfo
             )
 
         self.validate_broadcast_delivery(global_broadcasted, global_delivered, processesInfo, errors)
@@ -213,20 +235,21 @@ class Validation:
         return errors
 
 
-    def validate_broadcast_delivery(self, global_broadcasted, global_delivered, terminated_processes, errors):
+    def validate_broadcast_delivery(self, global_broadcasted, global_delivered, processesInfo, errors):
         """
         Validate that all broadcast messages by non-terminated processes were delivered reliably.
         """
         # Ensure no message was delivered without being broadcasted
         for sender_id, msg_id in global_delivered:
-            if (sender_id, msg_id) not in global_broadcasted and sender_id not in terminated_processes:
+            if (sender_id, msg_id) not in global_broadcasted and processesInfo[sender_id].state == ProcessState.RUNNING:
                 errors["created_but_not_broadcasted"] += 1
 
         # Ensure all broadcasted messages were delivered
         for process_id, msg_id in global_broadcasted:
-            if (process_id, msg_id) not in global_delivered and process_id not in terminated_processes:
-                # print("broadcasted_but_not_delivered d", process_id, msg_id)
+            if (process_id, msg_id) not in global_delivered and processesInfo[process_id].state == ProcessState.RUNNING:
                 errors["broadcasted_but_not_delivered"] += 1
+
+
 class LatticeAgreementValidation:
     def __init__(self, processes, proposals, max_proposal_size, distinct_values):
         self.procs = processes
