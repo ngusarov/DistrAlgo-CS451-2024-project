@@ -252,9 +252,9 @@ int main(int argc, char **argv) {
         receiverThreads.emplace_back(&PerfectLinks::receive, pl);
     }
 
-    std::vector<std::thread> deliveryThreads;
+    std::vector<std::thread> ackThreads;
     for (int i = 0; i < 1; ++i) {
-        deliveryThreads.emplace_back(&PerfectLinks::ackWorker, pl);
+        ackThreads.emplace_back(&PerfectLinks::ackWorker, pl);
     }
 
 
@@ -270,7 +270,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    for (auto &thread : deliveryThreads) {
+    for (auto &thread : ackThreads) {
         if (thread.joinable()) {
             thread.join();
         }

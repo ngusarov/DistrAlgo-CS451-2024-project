@@ -112,7 +112,8 @@ void PerfectLinks::sendWorker() {
                     flagShrinkQueue = true; // Mark for cleanup
                     break;
                 }
-                else if (std::next(it) == messageSet.end()){
+                else 
+                if (std::next(it) == messageSet.end()){
                     flagShrinkQueue = true; // Mark for cleanup
                 }
 
@@ -145,9 +146,9 @@ void PerfectLinks::sendWorker() {
 
                     it = messageSet.erase(it);
                     reinsertionBuffer.push_back(updatedMetadata);
+                }else{
+                    ++it;
                 }
-
-                ++it;
             }
 
             // Reinsert updated elements into the set after iteration
@@ -174,54 +175,69 @@ void PerfectLinks::sendWorker() {
         }
 
         // Shrink the queue if necessary
-        if (flagShrinkQueue) {
+        {
             std::unique_lock<std::mutex> queueLock(queueMutex);
             std::unique_lock<std::mutex> deliveryLock(deliveryMutex);
             std::unique_lock<std::mutex> ackLock(acknowledgedMessagesMutex);
 
-            numOfNewAcks = 0;
+            if (flagShrinkQueue) {
 
-            // Prepare a string stream for logging
-            std::ostringstream logStream;
 
-            // Log the initial queue size
-            logStream << "Shrinking the queue. Initial size: " << messageSet.size() << std::endl;
+                numOfNewAcks = 0;
 
-            for (auto it = messageSet.begin(); it != messageSet.end();) {
-                const Message& msg = it->message;
+                // Prepare a string stream for logging
+                std::ostringstream logStream;
 
-                auto& ackMap = acknowledgedMessages[msg.address];
-                auto& delivMap = deliveredMessages[ addressToProcessId[msg.address] ];
+                // Log the initial queue size
+                logStream << "Shrinking the queue. Initial size: " << messageSet.size() << std::endl;
 
-                // Remove messages fully acknowledged
-                if (ackMap[msg.initSenderId].find(msg.messageId) || delivMap[msg.initSenderId].find(msg.messageId)) {
-                    logStream << "Deleting message: {"
-                            << msg.initSenderId << ", "
-                            << msg.messageId << "} for port "
-                            << addressToProcessId[msg.address]
-                            << "; Queue size before deletion: " << messageSet.size() << std::endl;
+                std::vector<MessageMetadata> removalBuffer;  // Buffer for elements to be removed
 
-                    messageMap.erase(msg);  // Remove from map
-                    it = messageSet.erase(it);  // Remove from set
+                for (auto it = messageSet.begin(); it != messageSet.end();) {
+                    const Message& msg = it->message;
 
-                    logStream << "Queue size after deletion: " << messageSet.size() << std::endl;
-                } else {
-                    ++it;
+                    auto& ackMap = acknowledgedMessages[msg.address];
+                    auto& delivMap = deliveredMessages[addressToProcessId[msg.address]];
+
+                    // Identify messages to be removed
+                    if (ackMap[msg.initSenderId].find(msg.messageId) || delivMap[msg.initSenderId].find(msg.messageId)) {
+                        removalBuffer.push_back(*it);  // Add to removal buffer
+                        it = messageSet.erase(it);    // Safely erase from the set
+
+                        logStream << "Deleting message: {"
+                                << msg.initSenderId << ", "
+                                << msg.messageId << "} for port "
+                                << addressToProcessId[msg.address]
+                                << "; Queue size before deletion: " << messageSet.size() << std::endl;
+
+                      
+                        logStream << "Queue size after deletion: " << messageSet.size() << std::endl;
+                    } else {
+                        ++it;  // Move to the next element
+                    }
                 }
+
+                // Process elements in the removal buffer
+                for (const auto& metadata : removalBuffer) {
+                    const Message& msg = metadata.message;
+                    messageMap.erase(msg);  // Remove from the map
+                }
+
+
+                // Update minSeqNum
+                if (!messageSet.empty()) {
+                    minSeqNum = messageSet.begin()->message.messageId;
+                } else {
+                    minSeqNum = 0;
+                }
+
+                flagShrinkQueue = false;
+
+                // Output the accumulated logs
+                std::cout << logStream.str();
             }
-
-            // Update minSeqNum
-            if (!messageSet.empty()) {
-                minSeqNum = messageSet.begin()->message.messageId;
-            } else {
-                minSeqNum = 0;
-            }
-
-            flagShrinkQueue = false;
-
-            // Output the accumulated logs
-            std::cout << logStream.str();
         }
+
 
 
         std::this_thread::sleep_for(std::chrono::nanoseconds(1));  // Avoid busy waiting
@@ -397,17 +413,24 @@ void PerfectLinks::acknowledgeMessage(sockaddr_in srcAddr, int origProcId, int m
 }
 
 void PerfectLinks::deliverMessage(int senderProcessId, int origProcId, int messageId, bool flagReBroadcast) {
+    bool delivered = false;
     {
         std::unique_lock<std::mutex> deliveryLock(deliveryMutex);
         if (!deliveredMessages[senderProcessId][origProcId].find(messageId)) {
             deliveredMessages[senderProcessId][origProcId].addMessage(messageId);
+            delivered = true;
+        }
+    }
 
-            if (urb) {
-                urb->notifyDelivery(origProcId, messageId);  // Notify URB of plDelivery
-                if (flagReBroadcast){
-                    urb->reBroadcast(senderProcessId, origProcId, messageId);  // Re-broadcast logic
-                }
-            }
+    // // Enqueue the delivery task for the URB worker thread
+    // if (urb && delivered) {
+    //     urb->enqueueDeliveryTask(senderProcessId, origProcId, messageId, flagReBroadcast);
+    // }
+
+    if (urb && delivered) {
+        urb->notifyDelivery(origProcId, messageId);  // Notify URB of plDelivery
+        if (flagReBroadcast){
+            urb->reBroadcast(senderProcessId, origProcId, messageId);  // Re-broadcast logic
         }
     }
 }

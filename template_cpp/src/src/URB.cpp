@@ -25,6 +25,8 @@ UniformReliableBroadcast::UniformReliableBroadcast(PerfectLinks* pl, std::ofstre
     windowSize = 100;  // Set the window size
 
     logBufferThreshold = 1000;  // Set the log buffer threshold
+
+    deliveryWorkerThread = std::thread(&UniformReliableBroadcast::processDeliveryTasks, this);
 }
 
 void UniformReliableBroadcast::broadcastMessage(int messageId) {
@@ -120,10 +122,49 @@ void UniformReliableBroadcast::fifoDeliver(int origProcId, int maxMessageId) {
         for (int msgId = fifoDelivered[origProcId] + 1; msgId <= maxMessageId; ++msgId) {
             fifoDelivered[origProcId] = msgId;
             logBuffer.push_back("d " + std::to_string(origProcId) + " " + std::to_string(msgId) + "\n");
-
+            std::cout << "FIFO Delivered d " + std::to_string(origProcId) + " " + std::to_string(msgId) + "\n";
             if (logBuffer.size() >= logBufferThreshold) {
                 flushLogBuffer();
             }
+        }
+    }
+}
+
+
+void UniformReliableBroadcast::enqueueDeliveryTask(int senderProcessId, int origProcId, int messageId, bool flagReBroadcast) {
+    {
+        std::unique_lock<std::mutex> lock(deliveryQueueMutex);
+        deliveryQueue.emplace(senderProcessId, origProcId, messageId, flagReBroadcast);
+    }
+    deliveryQueueCv.notify_one();  // Notify the worker thread
+}
+
+
+void UniformReliableBroadcast::processDeliveryTasks() {
+    while (running) {
+        std::tuple<int, int, int, bool> task;
+
+        {
+            std::unique_lock<std::mutex> lock(deliveryQueueMutex);
+            deliveryQueueCv.wait(lock, [this]() { return !deliveryQueue.empty() || !running; });
+
+            if (!running && deliveryQueue.empty()) {
+                return;  // Exit the loop if the worker is stopped and the queue is empty
+            }
+
+            task = deliveryQueue.front();
+            deliveryQueue.pop();
+        }
+
+        // Process the delivery task
+        int senderProcessId = std::get<0>(task);
+        int origProcId = std::get<1>(task);
+        int messageId = std::get<2>(task);
+        bool flagReBroadcast = std::get<3>(task);
+
+        notifyDelivery(origProcId, messageId);
+        if (flagReBroadcast) {
+            reBroadcast(senderProcessId, origProcId, messageId);
         }
     }
 }
@@ -148,4 +189,13 @@ void UniformReliableBroadcast::flushLogBuffer() {
     }
     logBuffer.clear(); // Clear the buffer after flushing
     logFile.flush();   // Ensure immediate write to the file
+}
+
+
+UniformReliableBroadcast::~UniformReliableBroadcast() {
+    running = false;  // Signal the worker thread to stop
+    deliveryQueueCv.notify_all();  // Wake up the worker thread
+    if (deliveryWorkerThread.joinable()) {
+        deliveryWorkerThread.join();  // Wait for the worker thread to finish
+    }
 }

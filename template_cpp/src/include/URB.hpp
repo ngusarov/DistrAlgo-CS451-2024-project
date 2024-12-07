@@ -5,8 +5,10 @@
 #include <set>
 #include <vector>
 #include <tuple>
+#include <queue>             // For queue
 #include <utility>
 #include <mutex>
+#include <thread>            // For threads
 #include <fstream>
 #include <netinet/in.h>
 #include <condition_variable>
@@ -30,6 +32,7 @@ class UniformReliableBroadcast {
 public:
     UniformReliableBroadcast(PerfectLinks* pl, std::ofstream& logFile, 
                 const struct sockaddr_in &myAddr, int myProcessId, const std::vector<int>& processIds);
+    ~UniformReliableBroadcast();
 
     void broadcastMessage(int messageId);
     void broadcastManyMessages(int messageId);
@@ -38,6 +41,8 @@ public:
     void fifoDeliver(int origProcId, int maxMessageId);
     void reBroadcast(int senderProcessId, int origProcId, int messageId);
     void flushLogBuffer();
+    void enqueueDeliveryTask(int senderProcessId, int origProcId, int messageId, bool flagReBroadcast);
+
 
 public:
     PerfectLinks* pl;
@@ -73,5 +78,15 @@ public:
     std::vector<std::string> logBuffer; // Buffer for log messages
     std::mutex logBufferMutex;         // Mutex to protect the buffer
     size_t logBufferThreshold; // Threshold for flushing the buffer
+
+    // for new pl Deliveries
+    // Delivery task queue
+    std::queue<std::tuple<int, int, int, bool>> deliveryQueue;  // {senderProcessId, origProcId, messageId, flagReBroadcast}
+    std::mutex deliveryQueueMutex;
+    std::condition_variable deliveryQueueCv;
+    std::atomic<bool> running{true};  // Flag to stop the worker thread
+    std::thread deliveryWorkerThread;
+
+    void processDeliveryTasks();  // Worker function for processing tasks
 
 };
