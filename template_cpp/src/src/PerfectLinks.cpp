@@ -45,13 +45,13 @@ void PerfectLinks::sendManyMessages(const sockaddr_in &destAddr, std::pair<int, 
     messageSet.insert({msg, 0});  // Add to the set with initial send count
 
     // Prepare a string stream for logging
-    std::ostringstream logStream;
+    // std::ostringstream logStream;
     // logStream << "For " << addressToProcessId[destAddr]
     //           << " Put {" << message.first << ", " << message.second << "} "
     //           << "in the queue. Current queue size: " << messageSet.size() << std::endl;
 
     // Output the accumulated logs
-    std::cout << logStream.str();
+    // std::cout << logStream.str();
 }
 
 
@@ -74,13 +74,13 @@ void PerfectLinks::sendMessage(const sockaddr_in &destAddr, std::pair<int, int> 
         messageSet.insert({msg, 0});  // Add to the set with initial send count
         
         // Prepare a string stream for logging
-        std::ostringstream logStream;
+        // std::ostringstream logStream;
         // logStream << "For " << addressToProcessId[destAddr]
         //         << " Put {" << message.first << ", " << message.second << "} "
         //         << "in the queue. Current queue size: " << messageSet.size() << std::endl;
 
         // Output the accumulated logs
-        std::cout << logStream.str();
+        // std::cout << logStream.str();
     }
 }
 
@@ -194,7 +194,8 @@ void PerfectLinks::sendWorker() {
                                         reinterpret_cast<const struct sockaddr*>(&destAddr), sizeof(destAddr));
             if (sent_bytes < 0) {
                 perror("sendto failed");
-            } else {
+            } 
+            else {
                 std::stringstream ss;
                 ss << "Packet sent to " << addressToProcessId[destAddr] << ": " << packet << std::endl;
                 std::cout << ss.str();
@@ -212,10 +213,10 @@ void PerfectLinks::sendWorker() {
                 numOfNewAcks = 0;
 
                 // Prepare a string stream for logging
-                std::ostringstream logStream;
+                // std::ostringstream logStream;
 
                 // Log the initial queue size
-                logStream << "Shrinking the queue. Initial size: " << messageSet.size() << std::endl;
+                // logStream << "Shrinking the queue. Initial size: " << messageSet.size() << std::endl;
 
                 std::vector<MessageMetadata> removalBuffer;  // Buffer for elements to be removed
 
@@ -227,17 +228,17 @@ void PerfectLinks::sendWorker() {
                     // Identify messages to be removed
                     // if (ackMap[msg.initSenderId].find(msg.messageId) || delivMap[msg.initSenderId].find(msg.messageId)) {
                     if (delivMap[msg.initSenderId].find(msg.messageId)) {
-                        logStream << "Deleting message: {"
-                                << msg.initSenderId << ", "
-                                << msg.messageId << "} for port "
-                                << addressToProcessId[msg.address]
-                                << "; Queue size before deletion: " << messageSet.size() << std::endl;
+                        // logStream << "Deleting message: {"
+                        //         << msg.initSenderId << ", "
+                        //         << msg.messageId << "} for port "
+                        //         << addressToProcessId[msg.address]
+                        //         << "; Queue size before deletion: " << messageSet.size() << std::endl;
 
 
                         removalBuffer.push_back(*it);  // Add to removal buffer
                         it = messageSet.erase(it);    // Safely erase from the set
                       
-                        logStream << "Queue size after deletion: " << messageSet.size() << std::endl;
+                        // logStream << "Queue size after deletion: " << messageSet.size() << std::endl;
                     } else {
                         ++it;  // Move to the next element
                     }
@@ -260,7 +261,7 @@ void PerfectLinks::sendWorker() {
                 flagShrinkQueue = false;
 
                 // Output the accumulated logs
-                std::cout << logStream.str();
+                // std::cout << logStream.str();
             }
         }
 
@@ -332,9 +333,10 @@ void PerfectLinks::ackWorker() {
                                         reinterpret_cast<const struct sockaddr*>(&srcAddr), sizeof(srcAddr));
             if (sent_bytes < 0) {
                 perror("sendto failed (ack packet)");
-            } else {
-                std::cout << "ACK to " + std::to_string(addressToProcessId[srcAddr]) + ": " + combinedAck.c_str() + "\n";
             }
+            // else {
+            //     std::cout << "ACK to " + std::to_string(addressToProcessId[srcAddr]) + ": " + combinedAck.c_str() + "\n";
+            // }
         }
     }
 }

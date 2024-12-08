@@ -60,16 +60,23 @@ void UniformReliableBroadcast::broadcastManyMessages(int messageId) {
 void UniformReliableBroadcast::notifyDelivery(int origProcId, int messageId) {
     std::lock_guard<std::mutex> plLock(plDelivCountMutex);
 
-    // Increment or initialize the plDeliveredCount for this message
-    auto& count = plDeliveredCount[{origProcId, messageId}];
-    count++; // TODO does it actually increment?
+    // Initialize or increment the plDeliveredCount for this message
+    auto it = plDeliveredCount.find({origProcId, messageId});
+    if (it == plDeliveredCount.end()) {
+        plDeliveredCount[{origProcId, messageId}] = 2;  // Include sender's acknowledgment
+    } else {
+        plDeliveredCount[{origProcId, messageId}]++;    // Increment count
+    }
 
-    std::stringstream ss;
-    ss << "{" << origProcId << "," << messageId << "} count " 
-    << (count + 1) << "/" << numOfProcesses << std::endl;
-    std::cout << ss.str();
+    int count = plDeliveredCount[{origProcId, messageId}];
 
-    if (2*count >= numOfProcesses) {  // If majority acked (one process has always acked by default - the sender)
+
+    // std::stringstream ss;
+    // ss << "{" << origProcId << "," << messageId << "} count " 
+    // << (count) << "/" << numOfProcesses << std::endl;
+    // std::cout << ss.str();
+
+    if (2*count > numOfProcesses) {  // If majority acked (one process has always acked by default - the sender)
         plDeliveredCount.erase({origProcId, messageId});
         urbDeliver(origProcId, messageId);
     }
@@ -110,7 +117,7 @@ void UniformReliableBroadcast::fifoDeliver(int origProcId, int maxMessageId) {
         for (int msgId = fifoDelivered[origProcId] + 1; msgId <= maxMessageId; ++msgId) {
             fifoDelivered[origProcId] = msgId;
             logBuffer.push_back("d " + std::to_string(origProcId) + " " + std::to_string(msgId) + "\n");
-            std::cout << "FIFO Delivered d " + std::to_string(origProcId) + " " + std::to_string(msgId) + "\n";
+            // std::cout << "FIFO Delivered d " + std::to_string(origProcId) + " " + std::to_string(msgId) + "\n";
             if (logBuffer.size() >= logBufferThreshold) {
                 flushLogBuffer();
             }
