@@ -71,10 +71,10 @@ void UniformReliableBroadcast::notifyDelivery(int origProcId, int messageId) {
     int count = plDeliveredCount[{origProcId, messageId}];
 
 
-    std::stringstream ss;
-    ss << "{" << origProcId << "," << messageId << "} count " 
-    << (count) << "/" << numOfProcesses << std::endl;
-    std::cout << ss.str();
+    // std::stringstream ss;
+    // ss << "{" << origProcId << "," << messageId << "} count " 
+    // << (count) << "/" << numOfProcesses << std::endl;
+    // std::cout << ss.str();
 
     if (2*count > numOfProcesses) {  // If majority acked (one process has always acked by default - the sender)
         plDeliveredCount.erase({origProcId, messageId});

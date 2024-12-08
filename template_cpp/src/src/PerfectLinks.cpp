@@ -239,10 +239,10 @@ void PerfectLinks::sendWorker() {
                 numOfNewAcks = 0;
 
                 // Prepare a string stream for logging
-                std::ostringstream logStream;
+                // std::ostringstream logStream;
 
                 // Log the initial queue size
-                logStream << "Shrinking the queue. Initial size: " << messageSet.size() << std::endl;
+                // logStream << "Shrinking the queue. Initial size: " << messageSet.size() << std::endl;
 
                 std::vector<MessageMetadata> removalBuffer;  // Buffer for elements to be removed
 
@@ -253,17 +253,17 @@ void PerfectLinks::sendWorker() {
 
                     // Identify messages to be removed
                     if (delivMap[msg.initSenderId].find(msg.messageId)) {
-                        logStream << "Deleting message: {"
-                                << msg.initSenderId << ", "
-                                << msg.messageId << "} for port "
-                                << addressToProcessId[msg.address]
-                                << "; Queue size before deletion: " << messageSet.size() << std::endl;
+                        // logStream << "Deleting message: {"
+                        //         << msg.initSenderId << ", "
+                        //         << msg.messageId << "} for port "
+                        //         << addressToProcessId[msg.address]
+                        //         << "; Queue size before deletion: " << messageSet.size() << std::endl;
 
 
                         removalBuffer.push_back(*it);  // Add to removal buffer
                         it = messageSet.erase(it);    // Safely erase from the set
                       
-                        logStream << "Queue size after deletion: " << messageSet.size() << std::endl;
+                        // logStream << "Queue size after deletion: " << messageSet.size() << std::endl;
                     } else {
                         ++it;  // Move to the next element
                     }
@@ -286,7 +286,7 @@ void PerfectLinks::sendWorker() {
                 flagShrinkQueue = false;
 
                 // Output the accumulated logs
-                std::cout << logStream.str();
+                // std::cout << logStream.str();
             }
         }
 
@@ -442,10 +442,10 @@ void PerfectLinks::receive() {
 
                 auto end = std::chrono::high_resolution_clock::now();
                 auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - startTime);
-                std::stringstream ss;
-                ss << "From " <<  senderProcessId << " Ack a:" << origProcId << " " << messageId
-                << " T=" << duration.count() << " ms" << std::endl;
-                std::cout << ss.str();
+                // std::stringstream ss;
+                // ss << "From " <<  senderProcessId << " Ack a:" << origProcId << " " << messageId
+                // << " T=" << duration.count() << " ms" << std::endl;
+                // std::cout << ss.str();
 
                 deliverMessage(senderProcessId, origProcId, messageId, false);
             }
