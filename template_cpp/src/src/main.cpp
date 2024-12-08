@@ -231,8 +231,14 @@ int main(int argc, char **argv) {
         std::unique_lock<std::mutex> queueLock(pl->queueMutex);
         std::lock_guard<std::mutex> logBufferLock(urb->logBufferMutex);
         // Use URB broadcast // TODO Memory limitation won't allow to do it like this
-        for (unsigned int i = 1; i <= urb->windowSize; ++i){
-            urb->broadcastManyMessages(static_cast<int>(i));
+        if (urb->windowSize <= messageCount){
+            for (unsigned int i = 1; i <= urb->windowSize; ++i){
+                urb->broadcastManyMessages(static_cast<int>(i));
+            }
+        }else{
+            for (unsigned int i = 1; i <= messageCount; ++i){
+                urb->broadcastManyMessages(static_cast<int>(i));
+            }
         }
     }
 

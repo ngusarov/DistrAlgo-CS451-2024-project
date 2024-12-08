@@ -125,9 +125,11 @@ public:
     std::mutex queueMutex;  // Protects access to messageMap and messageSet
     std::unordered_map<Message, int, MessageHash> messageMap;  // Lookup table for messages
     std::multiset<MessageMetadata> messageSet;  // Sorted by numOfSendings
+    std::mutex packetsMutex;
     std::unordered_map<sockaddr_in, std::deque<std::pair<int, int>>, AddressHash, AddressEqual> packetsToSend;  // {destAddr : [{origProcID, messageID} ...]}
     std::atomic<int> minSeqNum;  // Lowest sequence number in the sliding window
     std::atomic<bool> flagShrinkQueue{false};  // Indicates if queue cleanup is needed
+    std::atomic<bool> flushPackets{false};  // Indicates if queue cleanup is needed
 
 
     // for cleaning the subQueue

@@ -63,7 +63,6 @@ void PerfectLinks::sendMessage(const sockaddr_in &destAddr, std::pair<int, int> 
 
     // auto& delivMap = deliveredMessages[addressToProcessId[msg.address]];
 
-    // // if (ackMap[msg.initSenderId].find(msg.messageId) || delivMap[msg.initSenderId].find(msg.messageId)) {
     // if (delivMap[msg.initSenderId].find(msg.messageId)) {
     //     return;  // Skip if the message is already acknowledged or delivered
     // }
@@ -95,6 +94,7 @@ void PerfectLinks::sendWorker() {
 
         {
             std::unique_lock<std::mutex> queueLock(queueMutex);
+            std::unique_lock<std::mutex> packetsLock(packetsMutex);
 
             for (auto it = messageSet.begin(); it != messageSet.end();) {
                 const Message& msg = it->message;
@@ -126,10 +126,9 @@ void PerfectLinks::sendWorker() {
                 if (numOfNewAcks > numOfNewAcksThreshold){
                     flagShrinkQueue = true; // Mark for cleanup
                     break;
-                }
-                else 
-                if (std::next(it) == messageSet.end()){
+                }else if (std::next(it) == messageSet.end()){
                     flagShrinkQueue = true; // Mark for cleanup
+                    flushPackets = true; // Mark for flush
                 }
 
                 // Add message to the packet for the destination
@@ -176,6 +175,7 @@ void PerfectLinks::sendWorker() {
                 }else{
                     ++it;
                 }
+
             }
 
             // Reinsert updated elements into the set after iteration
@@ -185,8 +185,34 @@ void PerfectLinks::sendWorker() {
             reinsertionBuffer.clear();  // Clear the buffer
         }
 
-        // Send the formed packet outside the critical section
-        if (!onePacketToSend.second.empty()) {
+
+        if (flushPackets){
+            std::unique_lock<std::mutex> packetsLock(packetsMutex);
+            for (auto& [destAddr, packetQueue] : packetsToSend) {
+                if (!packetQueue.empty()) {
+                    std::string packet = "m";
+                    for (const auto& m : packetQueue) {
+                        packet += std::to_string(m.first) + ":" + std::to_string(m.second) + ";";
+                    }
+                    packetQueue.clear();  // Clear the packet queue after forming the packet
+                    onePacketToSend = {destAddr, packet};
+
+                    // Send the packet outside the critical section
+                    const std::string& packetToSend = onePacketToSend.second;
+                    ssize_t sent_bytes = sendto(sockfd, packetToSend.c_str(), packetToSend.size(), 0,
+                                                reinterpret_cast<const struct sockaddr*>(&destAddr), sizeof(destAddr));
+                    if (sent_bytes < 0) {
+                        perror("sendto failed");
+                    } else {
+                        std::stringstream ss;
+                        ss << "Packet sent to " << addressToProcessId[destAddr] << ": " << packetToSend << std::endl;
+                        std::cout << ss.str();
+                    }
+                }
+            }
+            flushPackets = false;
+        }
+        else if (!onePacketToSend.second.empty()) { // Send the formed packet outside the critical section
             const sockaddr_in& destAddr = onePacketToSend.first;
             const std::string& packet = onePacketToSend.second;
 
@@ -213,10 +239,10 @@ void PerfectLinks::sendWorker() {
                 numOfNewAcks = 0;
 
                 // Prepare a string stream for logging
-                // std::ostringstream logStream;
+                std::ostringstream logStream;
 
                 // Log the initial queue size
-                // logStream << "Shrinking the queue. Initial size: " << messageSet.size() << std::endl;
+                logStream << "Shrinking the queue. Initial size: " << messageSet.size() << std::endl;
 
                 std::vector<MessageMetadata> removalBuffer;  // Buffer for elements to be removed
 
@@ -226,19 +252,18 @@ void PerfectLinks::sendWorker() {
                     auto& delivMap = deliveredMessages[addressToProcessId[msg.address]];
 
                     // Identify messages to be removed
-                    // if (ackMap[msg.initSenderId].find(msg.messageId) || delivMap[msg.initSenderId].find(msg.messageId)) {
                     if (delivMap[msg.initSenderId].find(msg.messageId)) {
-                        // logStream << "Deleting message: {"
-                        //         << msg.initSenderId << ", "
-                        //         << msg.messageId << "} for port "
-                        //         << addressToProcessId[msg.address]
-                        //         << "; Queue size before deletion: " << messageSet.size() << std::endl;
+                        logStream << "Deleting message: {"
+                                << msg.initSenderId << ", "
+                                << msg.messageId << "} for port "
+                                << addressToProcessId[msg.address]
+                                << "; Queue size before deletion: " << messageSet.size() << std::endl;
 
 
                         removalBuffer.push_back(*it);  // Add to removal buffer
                         it = messageSet.erase(it);    // Safely erase from the set
                       
-                        // logStream << "Queue size after deletion: " << messageSet.size() << std::endl;
+                        logStream << "Queue size after deletion: " << messageSet.size() << std::endl;
                     } else {
                         ++it;  // Move to the next element
                     }
@@ -261,7 +286,7 @@ void PerfectLinks::sendWorker() {
                 flagShrinkQueue = false;
 
                 // Output the accumulated logs
-                // std::cout << logStream.str();
+                std::cout << logStream.str();
             }
         }
 
@@ -417,10 +442,10 @@ void PerfectLinks::receive() {
 
                 auto end = std::chrono::high_resolution_clock::now();
                 auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - startTime);
-                // std::stringstream ss;
-                // ss << "From " <<  senderProcessId << " Ack a:" << origProcId << " " << messageId
-                // << " T=" << duration.count() << " ms" << std::endl;
-                // std::cout << ss.str();
+                std::stringstream ss;
+                ss << "From " <<  senderProcessId << " Ack a:" << origProcId << " " << messageId
+                << " T=" << duration.count() << " ms" << std::endl;
+                std::cout << ss.str();
 
                 deliverMessage(senderProcessId, origProcId, messageId, false);
             }
