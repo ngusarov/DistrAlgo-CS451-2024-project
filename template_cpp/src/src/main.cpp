@@ -77,7 +77,7 @@ int main(int argc, char **argv) {
     auto hosts = parser.hosts();
 
     // unsigned long receiverId;
-    int messageCount;
+    unsigned int messageCount;
 
     std::ifstream configFile(parser.configPath());
     if (!configFile.is_open()) {
@@ -231,13 +231,13 @@ int main(int argc, char **argv) {
         std::unique_lock<std::mutex> queueLock(pl->queueMutex);
         std::lock_guard<std::mutex> logBufferLock(urb->logBufferMutex);
         // Use URB broadcast // TODO Memory limitation won't allow to do it like this
-        for (int i = 1; i <= urb->windowSize; ++i){
-            urb->broadcastManyMessages(i);
+        for (unsigned int i = 1; i <= urb->windowSize; ++i){
+            urb->broadcastManyMessages(static_cast<int>(i));
         }
     }
 
     // Initialize the pendingMessages for future broadcasts
-    if (urb->windowSize + 1 <= messageCount){
+    if (urb->windowSize <= messageCount - 1){
         urb->pendingMessages.addSegment({urb->windowSize + 1, messageCount});  // Example range
     }
     

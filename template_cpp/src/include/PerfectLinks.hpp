@@ -106,7 +106,6 @@ public:
     void ackWorker();
     void stopDelivering();  // To stop receiving/sending
 
-    void acknowledgeMessage(sockaddr_in srcAddr, int origProcId, int messageId);
     void deliverMessage(int senderProcessId, int origProcId, int messageId, bool flagReBroadcast);
 
     UniformReliableBroadcast* urb; // Pointer to URB instance
@@ -132,8 +131,6 @@ public:
 
 
     // for cleaning the subQueue
-    std::mutex acknowledgedMessagesMutex;
-    std::unordered_map<sockaddr_in, std::unordered_map<int, MessageSegments>, AddressHash, AddressEqual> acknowledgedMessages; // {recepientAddr :  { origProcID : Segments} ... }
     std::atomic<int> numOfNewAcks;
     std::atomic<int> numOfNewAcksThreshold;
 

@@ -46,9 +46,9 @@ void PerfectLinks::sendManyMessages(const sockaddr_in &destAddr, std::pair<int, 
 
     // Prepare a string stream for logging
     std::ostringstream logStream;
-    logStream << "For " << addressToProcessId[destAddr]
-              << " Put {" << message.first << ", " << message.second << "} "
-              << "in the queue. Current queue size: " << messageSet.size() << std::endl;
+    // logStream << "For " << addressToProcessId[destAddr]
+    //           << " Put {" << message.first << ", " << message.second << "} "
+    //           << "in the queue. Current queue size: " << messageSet.size() << std::endl;
 
     // Output the accumulated logs
     std::cout << logStream.str();
@@ -59,6 +59,14 @@ void PerfectLinks::sendMessage(const sockaddr_in &destAddr, std::pair<int, int> 
     Message msg = {message.second, message.first, destAddr};  // Create the message structure
 
     std::unique_lock<std::mutex> queueLock(queueMutex);
+    // std::unique_lock<std::mutex> deliveryLock(deliveryMutex);
+
+    // auto& delivMap = deliveredMessages[addressToProcessId[msg.address]];
+
+    // // if (ackMap[msg.initSenderId].find(msg.messageId) || delivMap[msg.initSenderId].find(msg.messageId)) {
+    // if (delivMap[msg.initSenderId].find(msg.messageId)) {
+    //     return;  // Skip if the message is already acknowledged or delivered
+    // }
 
     if (messageMap.find(msg) == messageMap.end()) {
         // Add to the map and the set
@@ -67,9 +75,9 @@ void PerfectLinks::sendMessage(const sockaddr_in &destAddr, std::pair<int, int> 
         
         // Prepare a string stream for logging
         std::ostringstream logStream;
-        logStream << "For " << addressToProcessId[destAddr]
-                << " Put {" << message.first << ", " << message.second << "} "
-                << "in the queue. Current queue size: " << messageSet.size() << std::endl;
+        // logStream << "For " << addressToProcessId[destAddr]
+        //         << " Put {" << message.first << ", " << message.second << "} "
+        //         << "in the queue. Current queue size: " << messageSet.size() << std::endl;
 
         // Output the accumulated logs
         std::cout << logStream.str();
@@ -94,20 +102,27 @@ void PerfectLinks::sendWorker() {
                 int seqNum = msg.messageId;
                 const sockaddr_in& destAddr = msg.address;
 
-                // std::cout << "Curr size of queue " << messageSet.size() << std::endl;
-                // std::cout << "Considering message " << msg.initSenderId << " " << seqNum << " for " << ntohs(destAddr.sin_port) << std::endl;
-                
+                // std::stringstream ss;
+                // ss << "Curr size of queue " << messageSet.size() << std::endl
+                // << "Considering message " << msg.initSenderId << " " << seqNum 
+                // << " for " << ntohs(destAddr.sin_port) << std::endl;
+
+                // std::cout << ss.str();
+
                 // Skip messages outside the sliding window // TODO: reconsider
-                // if (numSendings > 10){
+                // if (numSendings >= 1){
                 //     {        
-                //         std::unique_lock<std::mutex> ackLock(acknowledgedMessagesMutex);       
-                //         auto& ackMap = acknowledgedMessages[destAddr];
-                //         if (ackMap[origProcId].find(seqNum)) {
+                //         std::unique_lock<std::mutex> deliveryLock(deliveryMutex);
+
+                //         auto& delivMap = deliveredMessages[addressToProcessId[msg.address]];
+
+                //         // if (ackMap[msg.initSenderId].find(msg.messageId) || delivMap[msg.initSenderId].find(msg.messageId)) {
+                //         if (delivMap[msg.initSenderId].find(msg.messageId)) {
                 //             flagShrinkQueue = true; // Mark for cleanup
-                //             break;
+                //             continue;
                 //         }
                 //     }
-                // }
+                // }else
                 if (numOfNewAcks > numOfNewAcksThreshold){
                     flagShrinkQueue = true; // Mark for cleanup
                     break;
@@ -129,23 +144,35 @@ void PerfectLinks::sendWorker() {
                     MessageMetadata updatedMetadata = *it;
                     updatedMetadata.numOfSendings++;
 
-                    // std::cout << "Included " << msg.initSenderId << " " << seqNum << " for "
-                    //           << ntohs(destAddr.sin_port) << "; Num sendings: " << numSendings << std::endl;
+                    // std::stringstream ss;
+                    // ss << "Included " << msg.initSenderId << " " << seqNum << " for "
+                    //           << addressToProcessId[destAddr] << "; Num sendings: " << numSendings << std::endl;
+                    // std::cout << ss.str();
 
                     // Stop forming packets if the current destination packet is full
                     if (packetQueue.size() >= packetSize) {
                         std::string packet = "m";
                         for (const auto& m : packetQueue) {
+                            // std::stringstream ss;
+                            // ss << "Comb packet " << m.first << " " << m.second << " for "
+                            //         << addressToProcessId[destAddr] << "; Num sendings: " << numSendings << std::endl;
+                            // std::cout << ss.str();
                             packet += std::to_string(m.first) + ":" + std::to_string(m.second) + ";";
                         }
                         packetQueue.clear();  // Clear the packet queue after forming the packet
                         onePacketToSend = {destAddr, packet};
 
+
+                        messageMap[msg] = numSendings + 1;  // Update the send count
+                        it = messageSet.erase(it);
+                        reinsertionBuffer.push_back(updatedMetadata);
+
                         break;
                     }
-
+                    messageMap[msg] = numSendings + 1;  // Update the send count
                     it = messageSet.erase(it);
                     reinsertionBuffer.push_back(updatedMetadata);
+
                 }else{
                     ++it;
                 }
@@ -178,7 +205,6 @@ void PerfectLinks::sendWorker() {
         {
             std::unique_lock<std::mutex> queueLock(queueMutex);
             std::unique_lock<std::mutex> deliveryLock(deliveryMutex);
-            std::unique_lock<std::mutex> ackLock(acknowledgedMessagesMutex);
 
             if (flagShrinkQueue) {
 
@@ -196,20 +222,20 @@ void PerfectLinks::sendWorker() {
                 for (auto it = messageSet.begin(); it != messageSet.end();) {
                     const Message& msg = it->message;
 
-                    auto& ackMap = acknowledgedMessages[msg.address];
                     auto& delivMap = deliveredMessages[addressToProcessId[msg.address]];
 
                     // Identify messages to be removed
-                    if (ackMap[msg.initSenderId].find(msg.messageId) || delivMap[msg.initSenderId].find(msg.messageId)) {
-                        removalBuffer.push_back(*it);  // Add to removal buffer
-                        it = messageSet.erase(it);    // Safely erase from the set
-
+                    // if (ackMap[msg.initSenderId].find(msg.messageId) || delivMap[msg.initSenderId].find(msg.messageId)) {
+                    if (delivMap[msg.initSenderId].find(msg.messageId)) {
                         logStream << "Deleting message: {"
                                 << msg.initSenderId << ", "
                                 << msg.messageId << "} for port "
                                 << addressToProcessId[msg.address]
                                 << "; Queue size before deletion: " << messageSet.size() << std::endl;
 
+
+                        removalBuffer.push_back(*it);  // Add to removal buffer
+                        it = messageSet.erase(it);    // Safely erase from the set
                       
                         logStream << "Queue size after deletion: " << messageSet.size() << std::endl;
                     } else {
@@ -371,10 +397,10 @@ void PerfectLinks::receive() {
                     receivedQueueCv.notify_one();
 
 
-                    std::stringstream ss;
-                    ss << "From " <<  senderProcessId << " Received m:" << origProcId << " " << messageId
-                    << " T=" << duration.count() << " ms" << std::endl;
-                    std::cout << ss.str();
+                    // std::stringstream ss;
+                    // ss << "From " <<  senderProcessId << " Received m:" << origProcId << " " << messageId
+                    // << " T=" << duration.count() << " ms" << std::endl;
+                    // std::cout << ss.str();
                 }
 
                 deliverMessage(senderProcessId, origProcId, messageId, true);
@@ -389,25 +415,13 @@ void PerfectLinks::receive() {
 
                 auto end = std::chrono::high_resolution_clock::now();
                 auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - startTime);
-                std::stringstream ss;
-                ss << "From " <<  senderProcessId << " Ack a:" << origProcId << " " << messageId
-                << " T=" << duration.count() << " ms" << std::endl;
-                std::cout << ss.str();
+                // std::stringstream ss;
+                // ss << "From " <<  senderProcessId << " Ack a:" << origProcId << " " << messageId
+                // << " T=" << duration.count() << " ms" << std::endl;
+                // std::cout << ss.str();
 
-                acknowledgeMessage(srcAddr, origProcId, messageId);
                 deliverMessage(senderProcessId, origProcId, messageId, false);
             }
-        }
-    }
-}
-
-
-void PerfectLinks::acknowledgeMessage(sockaddr_in srcAddr, int origProcId, int messageId) {
-    {
-        std::unique_lock<std::mutex> ackLock(acknowledgedMessagesMutex);
-        if (!acknowledgedMessages[srcAddr][origProcId].find(messageId)) {
-            acknowledgedMessages[srcAddr][origProcId].addMessage(messageId);
-            numOfNewAcks++;
         }
     }
 }
@@ -419,13 +433,9 @@ void PerfectLinks::deliverMessage(int senderProcessId, int origProcId, int messa
         if (!deliveredMessages[senderProcessId][origProcId].find(messageId)) {
             deliveredMessages[senderProcessId][origProcId].addMessage(messageId);
             delivered = true;
+            numOfNewAcks++;
         }
     }
-
-    // // Enqueue the delivery task for the URB worker thread
-    // if (urb && delivered) {
-    //     urb->enqueueDeliveryTask(senderProcessId, origProcId, messageId, flagReBroadcast);
-    // }
 
     if (urb && delivered) {
         urb->notifyDelivery(origProcId, messageId);  // Notify URB of plDelivery
