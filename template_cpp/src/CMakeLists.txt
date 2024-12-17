@@ -2,11 +2,13 @@
 # You can, however, change the list of files that comprise this variable.
 
 include_directories(include)
-set(SOURCES 
+set(SOURCES
     src/main.cpp
-    src/hello.c
-    src/URB.cpp
     src/PerfectLinks.cpp
+    src/BEB.cpp
+    src/LatticeAgreement.cpp
+    src/Messages.cpp
+    # src/parser.cpp   # Uncomment if parser implementation is moved to .cpp
 )
 
 # DO NOT EDIT THE FOLLOWING LINES

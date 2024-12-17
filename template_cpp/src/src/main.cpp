@@ -4,41 +4,23 @@
 #include <signal.h>
 #include <fstream>
 #include <fcntl.h>  // Include this to use F_GETFL, F_SETFL, O_NONBLOCK
-// #include <filesystem>  // Requires C++17
+#include <unistd.h> // For getpid()
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 #include "parser.hpp"
-#include "hello.h"
 #include "PerfectLinks.hpp"
-#include "URB.hpp"
+#include "BEB.hpp"
+#include "LatticeAgreement.hpp"
+#include "Messages.hpp"
 
-// Declare the global PerfectLinks object
-PerfectLinks* pl = nullptr;  // Initially a nullptr
-UniformReliableBroadcast* urb = nullptr;
+// Forward declare global pointers if needed
+// However, try to limit global usage. It's shown here for consistency with previous code.
+PerfectLinks* pl = nullptr;
+BEB* beb = nullptr;
+LatticeAgreement* la = nullptr;
 
-
-// void createLogFile(const std::string& outputPath) {
-//     // Step 1: Ensure directory exists
-//     std::filesystem::path filePath(outputPath);
-//     std::filesystem::path dirPath = filePath.parent_path();
-
-//     if (!dirPath.empty() && !std::filesystem::exists(dirPath)) {
-//         // Create the directory and its parents if they don't exist
-//         if (!std::filesystem::create_directories(dirPath)) {
-//             std::cerr << "Failed to create directory: " << dirPath << "\n";
-//             exit(EXIT_FAILURE);
-//         }
-//     }
-
-//     // Step 2: Create and open the output file
-//     std::ofstream logFile(outputPath);
-//     if (!logFile.is_open()) {
-//         std::cerr << "Failed to open output file: " << outputPath << "\n";
-//         exit(EXIT_FAILURE);
-//     }
-// }
-
-
-// Signal handler for stopping the process and flushing logs
 static void stop(int) {
     signal(SIGTERM, SIG_DFL);
     signal(SIGINT, SIG_DFL);
@@ -46,12 +28,11 @@ static void stop(int) {
     std::cout << "Immediately stopping network packet processing.\n";
     std::cout << "Writing output.\n";
 
-    if (urb != nullptr) {
-        std::cout << urb->logBuffer.size() << " messages left in the buffer.\n";
-        urb->flushLogBuffer();
+    if (la != nullptr) {
+        la->flushDecisions(); // Write any remaining lines
     }
-    std::cout << "Finished writing" << std::endl;
 
+    std::cout << "Finished writing" << std::endl;
     exit(0);  // Exit the program
 }
 
@@ -60,13 +41,10 @@ int main(int argc, char **argv) {
     signal(SIGINT, stop);
 
     bool requireConfig = true;
-
     Parser parser(argc, argv);
     parser.parse();
 
-    hello();
-    std::cout << std::endl;
-
+    // Print the same initial messages as before
     std::cout << "My PID: " << getpid() << "\n";
     std::cout << "From a new terminal type `kill -SIGINT " << getpid() << "` or `kill -SIGTERM " << getpid() << "` to stop processing packets\n\n";
 
@@ -76,21 +54,32 @@ int main(int argc, char **argv) {
     unsigned long myId = parser.id();
     auto hosts = parser.hosts();
 
-    // unsigned long receiverId;
-    unsigned int messageCount;
-
+    // Read lattice agreement config:
     std::ifstream configFile(parser.configPath());
     if (!configFile.is_open()) {
         std::cerr << "Could not open config file: " << parser.configPath() << "\n";
         exit(EXIT_FAILURE);
     }
 
-    // configFile >> messageCount >> receiverId; // TODO this was for the PerfectLinks
-    configFile >> messageCount; // This is for URB + FIFO
+    // p, vs, ds on the first line
+    unsigned int p, vs, ds;
+    configFile >> p >> vs >> ds;
+
+    // Next p lines: each contains a proposal set (up to vs elements)
+    std::vector<std::vector<int>> proposals(p);
+    for (unsigned int i = 0; i < p; i++) {
+        for (unsigned int j = 0; j < vs; j++) {
+            int val;
+            if (!(configFile >> val)) {
+                // fewer elements than vs if line ends early
+                break;
+            }
+            proposals[i].push_back(val);
+        }
+    }
     configFile.close();
 
-    // bool isReceiver = (myId == receiverId);
-    std::cout << "My ID: " << myId << std::endl;// << (isReceiver ? " (Receiver)\n" : " (Sender)\n");
+    std::cout << "My ID: " << myId << std::endl;
 
     // Step 2: Create and open the output file
     std::ofstream logFile(parser.outputPath());
@@ -98,18 +87,7 @@ int main(int argc, char **argv) {
         std::cerr << "Failed to open output file: " << parser.outputPath() << "\n";
         exit(EXIT_FAILURE);
     }
-    // std::string outputPath = parser.outputPath();
-    // // createLogFile(outputPath);
-
-    // // Proceed with other operations, now that the file is guaranteed to exist
-    // std::ofstream logFile(outputPath);
-    // if (logFile.is_open()) {
-    //     logFile << "Logging initialized successfully.\n";
-    //     logFile.close();
-    //     std::cout << "Log file created and written to at: " << outputPath << std::endl;
-    // } else {
-    //     std::cerr << "Failed to write to log file at: " << outputPath << std::endl;
-    // }
+    // We will not buffer large logs; immediate logging after each decision happens in LatticeAgreement
 
     // Step 3: Create and bind the socket
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -167,8 +145,6 @@ int main(int argc, char **argv) {
             host.port = static_cast<uint16_t>((2048 + host.id <= std::numeric_limits<uint16_t>::max()) 
                                         ? 2048 + host.id 
                                         : std::numeric_limits<uint16_t>::max());
-
-
             std::cout << "Host " << host.id << " had port below 2048. Reassigned to port " << host.port << std::endl;
         }
     }
@@ -215,75 +191,37 @@ int main(int argc, char **argv) {
 
     std::cout << "Socket successfully bound for Process " << myId << " at port " << ntohs(myAddr.sin_port) << std::endl;
 
-    // Initialize the PerfectLinks object globally
-    PerfectLinks plInstance(sockfd, myAddr, static_cast<int>(myId));
-    plInstance.addressToProcessId = std::move(updatedAddressToProcessId);
+    // Number of processes
+    int n = (int)processIds.size();
+    // Compute f if needed (assuming n=2f+1, or any other formula required by LA)
+    int f = (n - 1) / 2;
+
+    // Initialize PerfectLinks in a simple fire-and-forget mode
+    PerfectLinks plInstance(sockfd, myAddr, (int)myId, updatedProcessIdToAddress);
     pl = &plInstance;
 
-    // Initialize URB
-    urb = new UniformReliableBroadcast(&plInstance, logFile, myAddr, static_cast<int>(myId), processIds);
-    urb->processIdToAddress = std::move(updatedProcessIdToAddress);
+    // Initialize BEB
+    BEB bebInstance(&plInstance, processIds);
+    beb = &bebInstance;
 
-    // Assign URB to PerfectLinks
-    plInstance.urb = urb;
+    // Initialize LatticeAgreement
+    // Assume LatticeAgreement takes (BEB*, myId, n, f, logFile)
+    LatticeAgreement laInstance(&bebInstance, (int)myId, n, f, logFile);
+    la = &laInstance;
 
-    {
-        std::unique_lock<std::mutex> queueLock(pl->queueMutex);
-        std::lock_guard<std::mutex> logBufferLock(urb->logBufferMutex);
-        // Use URB broadcast // TODO Memory limitation won't allow to do it like this
-        if (urb->windowSize <= messageCount){
-            for (unsigned int i = 1; i <= urb->windowSize; ++i){
-                urb->broadcastManyMessages(static_cast<int>(i));
-            }
-        }else{
-            for (unsigned int i = 1; i <= messageCount; ++i){
-                urb->broadcastManyMessages(static_cast<int>(i));
-            }
-        }
+    // Run multi-shot lattice agreement for p proposals
+    for (unsigned int i = 0; i < p; i++) {
+        // propose() would run one single-shot lattice agreement for proposals[i]
+        // The LatticeAgreement is responsible for logging immediately once a decision is reached
+        la->propose(proposals[i]);
+
+        // After returning from propose(), the decided set should have been logged already.
+        // If propose() is asynchronous, we'd have a different approach (e.g., a blocking wait),
+        // but let's assume it's blocking until decision is reached for simplicity.
     }
 
-    // Initialize the pendingMessages for future broadcasts
-    if (urb->windowSize <= messageCount - 1){
-        urb->pendingMessages.addSegment({urb->windowSize + 1, messageCount});  // Example range
-    }
-    
-    std::vector<std::thread> sendThreads;  // Thread pool for sending messages
-    // Launch sender threads
-    for (int i = 0; i < 1; ++i) {
-        sendThreads.emplace_back(&PerfectLinks::sendWorker, pl);
-    }
-
-    std::vector<std::thread> receiverThreads;
-    for (int i = 0; i < 1; ++i) {
-        receiverThreads.emplace_back(&PerfectLinks::receive, pl);
-    }
-
-    std::vector<std::thread> ackThreads;
-    for (int i = 0; i < 1; ++i) {
-        ackThreads.emplace_back(&PerfectLinks::ackWorker, pl);
-    }
-
-
-    for (auto &thread : sendThreads) {
-        if (thread.joinable()) {
-            thread.join();
-        }
-    }
-
-    for (auto &thread : receiverThreads) {
-        if (thread.joinable()) {
-            thread.join();
-        }
-    }
-
-    for (auto &thread : ackThreads) {
-        if (thread.joinable()) {
-            thread.join();
-        }
-    }
-
-    delete urb;
+    // Since we log immediately after each round, no need for a final flush here, but let's just ensure it:
+    logFile.flush();
 
     return 0;
 }
-
