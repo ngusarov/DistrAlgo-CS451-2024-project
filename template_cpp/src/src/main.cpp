@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sstream>
 
 #include "parser.hpp"
 #include "PerfectLinks.hpp"
@@ -54,27 +55,39 @@ int main(int argc, char **argv) {
     unsigned long myId = parser.id();
     auto hosts = parser.hosts();
 
-    // Read lattice agreement config:
     std::ifstream configFile(parser.configPath());
     if (!configFile.is_open()) {
         std::cerr << "Could not open config file: " << parser.configPath() << "\n";
         exit(EXIT_FAILURE);
     }
 
-    // p, vs, ds on the first line
+    // 1. Read p, vs, ds using operator>>
     unsigned int p, vs, ds;
     configFile >> p >> vs >> ds;
 
-    // Next p lines: each contains a proposal set (up to vs elements)
+    // 2. Discard the rest of that line, including the trailing newline
+    std::string discard;
+    std::getline(configFile, discard);  // consume leftover from the first line
+
+    // 3. Now read p lines, each line representing one proposal
     std::vector<std::vector<int>> proposals(p);
     for (unsigned int i = 0; i < p; i++) {
-        for (unsigned int j = 0; j < vs; j++) {
-            int val;
-            if (!(configFile >> val)) {
-                // fewer elements than vs if line ends early
+        std::string line;
+        if (!std::getline(configFile, line)) {
+            std::cerr << "Error: insufficient lines for proposals. "
+                    << "Line " << i+1 << " missing.\n";
+            break;
+        }
+
+        std::istringstream iss(line);
+        int val;
+        unsigned int count = 0;
+        while (iss >> val) {
+            proposals[i].push_back(val);
+            // If there's a max limit 'vs', stop after reading vs elements
+            if (++count >= vs) {
                 break;
             }
-            proposals[i].push_back(val);
         }
     }
     configFile.close();
@@ -192,27 +205,42 @@ int main(int argc, char **argv) {
     std::cout << "Socket successfully bound for Process " << myId << " at port " << ntohs(myAddr.sin_port) << std::endl;
 
     // Number of processes
-    int n = (int)processIds.size();
+    int n = static_cast<int>(processIds.size());
     // Compute f if needed (assuming n=2f+1, or any other formula required by LA)
     int f = (n - 1) / 2;
 
+    std::cout << "Number of processes: " << n << "; Half " << f << std::endl;
+
     // Initialize PerfectLinks in a simple fire-and-forget mode
-    PerfectLinks plInstance(sockfd, myAddr, (int)myId, updatedProcessIdToAddress);
+    PerfectLinks plInstance(sockfd, myAddr, static_cast<int>(myId), updatedProcessIdToAddress, updatedAddressToProcessId);
     pl = &plInstance;
 
     // Initialize BEB
-    BEB bebInstance(&plInstance, processIds);
+    BEB bebInstance(&plInstance, processIds, static_cast<int>(myId));
     beb = &bebInstance;
 
     // Initialize LatticeAgreement
     // Assume LatticeAgreement takes (BEB*, myId, n, f, logFile)
-    LatticeAgreement laInstance(&bebInstance, (int)myId, n, f, logFile);
+    LatticeAgreement laInstance(&bebInstance, static_cast<int>(myId), n, f, logFile);
     la = &laInstance;
 
     // Run multi-shot lattice agreement for p proposals
     for (unsigned int i = 0; i < p; i++) {
         // propose() would run one single-shot lattice agreement for proposals[i]
         // The LatticeAgreement is responsible for logging immediately once a decision is reached
+
+        std::stringstream sstream;
+        sstream << "Proposing ";
+
+        // Print the proposal set contents
+        for (auto val : proposals[i]) {
+            sstream << val << " ";
+        }
+        sstream << std::endl;
+
+        // After building the whole line in the stringstream, print it all at once:
+        std::cout << sstream.str();
+
         la->propose(proposals[i]);
 
         // After returning from propose(), the decided set should have been logged already.
@@ -222,6 +250,14 @@ int main(int argc, char **argv) {
 
     // Since we log immediately after each round, no need for a final flush here, but let's just ensure it:
     logFile.flush();
+
+    // ---- Keep the process alive so it can still respond to network requests ----
+
+    // Option A: Simple indefinite loop (Ctrl-C to stop)
+    std::cout << "All proposals are done. Keeping process alive to respond.\n";
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
 
     return 0;
 }

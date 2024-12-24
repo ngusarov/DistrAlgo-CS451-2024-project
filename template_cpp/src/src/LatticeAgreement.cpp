@@ -4,8 +4,7 @@
 
 LatticeAgreement::LatticeAgreement(BEB* beb, int myId, int n, int f, std::ofstream& logFile)
     : beb(beb), myId(myId), n(n), f(f), logFile(logFile),
-      active_proposal_number(0), proposing(false), acksReceived(0), nacksReceived(0), decided(false),
-      current_proposal_number(-1), proposal_origin(-1)
+      active_proposal_number(0), proposing(false), acksReceived(0), nacksReceived(0), decided(false)
 {
     beb->registerDeliveryCallback([this](const sockaddr_in& addr, const std::string& msg) {
         this->onMessageReceived(addr, msg);
@@ -13,15 +12,27 @@ LatticeAgreement::LatticeAgreement(BEB* beb, int myId, int n, int f, std::ofstre
 }
 
 void LatticeAgreement::propose(const std::vector<int>& proposedValue) {
+    
     std::unique_lock<std::mutex> lock(mtx);
-    // Start or restart a proposal round
-    active_proposal_number++;
-    active_value.clear();
-    active_value.insert(proposedValue.begin(), proposedValue.end());
+
+    active_proposal_number = 0;
+
+    {
+        std::unique_lock<std::mutex> lock(mtxProposedValue);
+        // Start or restart a proposal round
+        active_proposal_number++;
+        proposed_value.clear();
+        proposed_value.insert(proposedValue.begin(), proposedValue.end());
+
+    }
+
+    {
+        std::unique_lock<std::mutex> lock(mtxAcceptedValue);
+        accepted_value.clear();
+    }
 
     acksReceived = 0;
     nacksReceived = 0;
-    mergedNackValue.clear();
     proposing = true;
     decided = false;
 
@@ -39,18 +50,23 @@ void LatticeAgreement::onMessageReceived(const sockaddr_in& senderAddr, const st
 
     int senderId = beb->getProcessId(senderAddr);
 
-    std::unique_lock<std::mutex> lock(mtx);
+    std::stringstream sstream;
+    sstream << "Received " << static_cast<int>(pm.type)  << " from " << senderId << " : " << msg;
+    sstream << std::endl;
+    std::cout << sstream.str();
 
     switch (pm.type) {
         case MessageType::PROPOSAL:
             handleProposal(senderId, pm.proposal_number, pm.values);
             break;
         case MessageType::ACK:
-            handleAck(senderId, pm.proposal_number);
+            beb->markResponded(senderId);
+            handleAck(pm.proposal_number);
             break;
         case MessageType::NACK: {
+            beb->markResponded(senderId);
             std::unordered_set<int> valSet(pm.values.begin(), pm.values.end());
-            handleNack(senderId, pm.proposal_number, valSet);
+            handleNack(pm.proposal_number, valSet);
             break;
         }
         default:
@@ -60,37 +76,98 @@ void LatticeAgreement::onMessageReceived(const sockaddr_in& senderAddr, const st
 
 void LatticeAgreement::handleProposal(int senderId, int proposal_number, const std::vector<int>& proposedSet) {
 
+    std::stringstream sstream;
+    sstream << "Handling PROPOSAL" << " from " << senderId << " number " << proposal_number;
+    sstream << std::endl;
+    std::cout << sstream.str();
+
+    bool isSubsetFlag = false;
+    {
+        std::unique_lock<std::mutex> lock(mtxAcceptedValue);
+        isSubsetFlag = isSubset(accepted_value, proposedSet);
+    }
+
     // Same proposal_number again, check subset
-    if (isSubset(accepted_value, proposedSet)) {
-        accepted_value = proposedSet;
+    if (isSubsetFlag) {
+
+        std::stringstream sstream;
+        sstream << "It is subset; moving to ACK";
+        sstream << std::endl;
+        std::cout << sstream.str();
+
+        {
+            std::unique_lock<std::mutex> lock(mtxAcceptedValue);
+            accepted_value = std::unordered_set<int>(proposedSet.begin(), proposedSet.end());
+        }
         // accepted_value is subset of proposedSet, ACK again
-        sendAck(proposal_number, proposal_origin);
+        if (senderId == myId) {
+            handleAck(proposal_number);
+        } else {
+            sendAck(proposal_number, senderId);
+        }
     } else {
+        std::stringstream sstream;
+        sstream << "It is not subset; moving to NACK";
+        sstream << std::endl;
+        std::cout << sstream.str();
+
+
+        {
+            std::unique_lock<std::mutex> lock(mtxAcceptedValue);
+            unionSets(accepted_value, proposedSet); // changes accepted Set
+        }
         // not a subset, union and NACK
-        unionSets(accepted_value, proposedSet); // changes accepted Set
-        sendNack(proposal_number, proposal_origin, accepted_value);
+        if (senderId == myId) {
+            handleNack(proposal_number, accepted_value);
+        } else {
+            sendNack(proposal_number, senderId, accepted_value);
+        }
     }
     
 }
 
-void LatticeAgreement::handleAck(int senderId, int proposal_number) {
+void LatticeAgreement::handleAck(int proposal_number) {
     if (proposal_number != active_proposal_number) return;
 
     acksReceived++;
-    // If we get f+1 ACK and no NACK, decide active_value
+
+    std::stringstream sstream;
+    sstream << "Handling ACK" << " number " << proposal_number << "; acksReceived: " << acksReceived << "; nacksReceived: " << nacksReceived << "; proposing: " << proposing << "; decided: " << decided << ";";
+    sstream << std::endl;
+    std::cout << sstream.str();
+
+    // If we get f+1 ACK and no NACK, decide proposed_value
     if (acksReceived >= f+1 && proposing) {
-        decide(active_value);
+        beb->stopBroadcast();
+        decide(proposed_value);
     }
 }
 
-void LatticeAgreement::handleNack(int senderId, int proposal_number, const std::unordered_set<int>& acceptedSet) {
-    if (!proposing || proposal_number != active_proposal_number) return;
+void LatticeAgreement::handleNack(int proposal_number, const std::unordered_set<int>& acceptedSet) {
+    if (proposal_number != active_proposal_number) return;
 
     nacksReceived++;
 
-    unionSets(active_value, acceptedSet);    
+    std::stringstream sstream;
+    sstream << "Handling NACK" << " number " << proposal_number << "; acksReceived: " << acksReceived << "; nacksReceived: " << nacksReceived << "; proposing: " << proposing << "; decided: " << decided << ";";
+    sstream << std::endl;
+    std::cout << sstream.str();
 
-    if (nacksReceived > 0 && acksReceived+nacksReceived >= f+1) {
+    
+    {
+        std::unique_lock<std::mutex> lock(mtxProposedValue);
+        unionSets(proposed_value, acceptedSet);   
+    }
+
+    sstream.clear();
+    sstream << "New Proposed value: ";
+    for (const auto& elem : proposed_value) {
+        sstream << elem << " ";
+    }
+    sstream << std::endl;
+    std::cout << sstream.str();
+
+    if (nacksReceived > 0 && acksReceived+nacksReceived >= f+1 && proposing) {
         active_proposal_number++;
         acksReceived = 0;
         nacksReceived = 0;
@@ -102,6 +179,14 @@ void LatticeAgreement::decide(const std::unordered_set<int>& decidedValue) {
     decided = true;
     proposing = false;
     decidedSet = decidedValue;
+
+    std::stringstream sstream;
+    sstream << "DECIDED: ";
+    for (auto elem : decidedSet) {
+        sstream << elem << " ";
+    }
+    sstream << std::endl;
+    std::cout << sstream.str();
 
     // Construct the line in memory
     std::ostringstream oss;
@@ -138,9 +223,28 @@ void LatticeAgreement::flushBufferedLines() {
 }
 
 void LatticeAgreement::sendProposal() {
-    std::vector<int> v(active_value.begin(), active_value.end());
+    // 1. Serialize the proposal
+    std::vector<int> v(proposed_value.begin(), proposed_value.end());
     std::string msg = serializeProposal(active_proposal_number, v);
-    beb->broadcast(msg);
+
+    // 2. "Deliver" the proposal to ourselves immediately
+    {
+        // Simulate receiving our own proposal as if it came from PerfectLinks/BEB
+        // but with senderId = myId
+        // We must parse it into 'pm' as usual
+        ParsedMessage pm = parseMessage(msg);
+        // Or skip parseMessage() and call handleProposal() directly if you prefer:
+        // handleProposal(myId, active_proposal_number, v);
+
+        // We'll do the parse step so that it's consistent with the rest of the flow:
+        if (pm.type == MessageType::PROPOSAL) {
+            handleProposal(myId, pm.proposal_number, pm.values);
+        }
+        // No else needed; we know we just serialized a PROPOSAL message
+    }
+
+    // 3. Start broadcasting to other processes
+    beb->startBroadcast(msg);
 }
 
 void LatticeAgreement::sendAck(int proposal_number, int proposerId) {

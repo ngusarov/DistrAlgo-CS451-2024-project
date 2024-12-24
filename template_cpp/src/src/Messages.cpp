@@ -61,9 +61,9 @@ ParsedMessage parseMessage(const std::string& msg) {
             pm.proposal_number = std::stoi(parts[1]);
             int setSize = std::stoi(parts[2]);
             int expectedSize = 3 + setSize;
-            if ((int)parts.size() < expectedSize) return pm; // Not enough elements
+            if (static_cast<int>(parts.size()) < expectedSize) return pm; // Not enough elements
             for (int i = 0; i < setSize; i++) {
-                pm.values.push_back(std::stoi(parts[3 + i]));
+                pm.values.push_back(std::stoi(parts[static_cast<size_t>(3 + i)]));
             }
             break;
         }
@@ -82,9 +82,9 @@ ParsedMessage parseMessage(const std::string& msg) {
             pm.proposal_number = std::stoi(parts[1]);
             int setSize = std::stoi(parts[2]);
             int expectedSize = 3 + setSize;
-            if ((int)parts.size() < expectedSize) return pm;
+            if (static_cast<int>(parts.size()) < expectedSize) return pm;
             for (int i = 0; i < setSize; i++) {
-                pm.values.push_back(std::stoi(parts[3 + i]));
+                pm.values.push_back(std::stoi(parts[static_cast<size_t>(3 + i)]));
             }
             break;
         }

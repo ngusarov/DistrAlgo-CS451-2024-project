@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <fstream>
 #include <netinet/in.h>
+#include <sstream>
 
 #include "BEB.hpp"
 #include "Messages.hpp"
@@ -20,11 +21,13 @@ public:
     // Called by BEB when a message is delivered.
     void onMessageReceived(const sockaddr_in& senderAddr, const std::string& msg);
 
+    void flushDecisions();
+
 private:
     // Acceptor and Proposer handlers
     void handleProposal(int senderId, int proposal_number, const std::vector<int>& proposedSet);
-    void handleAck(int senderId, int proposal_number);
-    void handleNack(int senderId, int proposal_number, const std::unordered_set<int>& acceptedSet);
+    void handleAck(int proposal_number);
+    void handleNack(int proposal_number, const std::unordered_set<int>& acceptedSet);
 
     // Internal methods
     void decide(const std::unordered_set<int>& decidedValue);
@@ -37,6 +40,8 @@ private:
     void unionSets(std::unordered_set<int>& baseSet, const std::unordered_set<int>& toAdd);
     bool isSubset(const std::unordered_set<int>& A, const std::vector<int>& B);
 
+    void flushBufferedLines();
+
 private:
     BEB* beb;
     int myId;
@@ -46,13 +51,14 @@ private:
 
     // Proposer state
     int active_proposal_number;
-    std::unordered_set<int> active_value;
+    std::mutex mtxProposedValue;
+    std::unordered_set<int> proposed_value;
     bool proposing;
     int acksReceived;
     int nacksReceived;
-    std::unordered_set<int> mergedNackValue;
 
     bool decided;
+    std::mutex mtxDecidedSet;
     std::unordered_set<int> decidedSet;
 
     std::mutex mtx;
@@ -60,8 +66,8 @@ private:
 
     // Acceptor state:
     int current_proposal_number;            // highest proposal_number seen
-    std::unordered_set<int> accepted_value; // accepted_value for that proposal_number
-    int proposal_origin;                    // who proposed current_proposal_number
+    std::mutex mtxAcceptedValue;
+    std::unordered_set<int> accepted_value; // proposed_value for that proposal_number
 
     std::vector<std::string> decidedLines; // Stores decided lines in memory
 };
