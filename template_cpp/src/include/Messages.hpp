@@ -8,6 +8,7 @@ struct ParsedMessage {
     MessageType type;
     int problem_number;
     int proposal_number;
+    int setSize;
     std::vector<int> values; // used for proposals (P) and nacks (N)
 };
 

@@ -34,7 +34,9 @@ ParsedMessage parseMessage(const std::string& msg) {
     // Split by ':'
     ParsedMessage pm;
     pm.type = MessageType::UNKNOWN;
+    pm.problem_number = -1;
     pm.proposal_number = -1;
+    pm.setSize = 0;
     pm.values.clear();
 
     if (msg.empty()) return pm;
@@ -60,10 +62,10 @@ ParsedMessage parseMessage(const std::string& msg) {
             pm.type = MessageType::PROPOSAL;
             pm.problem_number = std::stoi(parts[1]);
             pm.proposal_number = std::stoi(parts[2]);
-            int setSize = std::stoi(parts[3]);
-            int expectedSize = 4 + setSize;
+            pm.setSize = std::stoi(parts[3]);
+            int expectedSize = 4 + pm.setSize;
             if (static_cast<int>(parts.size()) < expectedSize) return pm; // Not enough elements
-            for (int i = 0; i < setSize; i++) {
+            for (int i = 0; i < pm.setSize; i++) {
                 pm.values.push_back(std::stoi(parts[static_cast<size_t>(4 + i)]));
             }
             break;
@@ -83,10 +85,10 @@ ParsedMessage parseMessage(const std::string& msg) {
             pm.type = MessageType::NACK;
             pm.problem_number = std::stoi(parts[1]);
             pm.proposal_number = std::stoi(parts[2]);
-            int setSize = std::stoi(parts[3]);
-            int expectedSize = 4 + setSize;
+            pm.setSize = std::stoi(parts[3]);
+            int expectedSize = 4 + pm.setSize;
             if (static_cast<int>(parts.size()) < expectedSize) return pm;
-            for (int i = 0; i < setSize; i++) {
+            for (int i = 0; i < pm.setSize; i++) {
                 pm.values.push_back(std::stoi(parts[static_cast<size_t>(4 + i)]));
             }
             break;
