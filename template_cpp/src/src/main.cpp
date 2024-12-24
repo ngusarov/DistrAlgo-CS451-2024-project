@@ -221,31 +221,19 @@ int main(int argc, char **argv) {
 
     // Initialize LatticeAgreement
     // Assume LatticeAgreement takes (BEB*, myId, n, f, logFile)
-    LatticeAgreement laInstance(&bebInstance, static_cast<int>(myId), n, f, logFile);
+    LatticeAgreement laInstance(&bebInstance, static_cast<int>(myId), n, f, logFile, p);
     la = &laInstance;
 
-    // Run multi-shot lattice agreement for p proposals
-    for (unsigned int i = 0; i < p; i++) {
-        // propose() would run one single-shot lattice agreement for proposals[i]
-        // The LatticeAgreement is responsible for logging immediately once a decision is reached
-
+    for (unsigned int problem_number = 0; problem_number < p; problem_number++) {
         std::stringstream sstream;
         sstream << "Proposing ";
-
-        // Print the proposal set contents
-        for (auto val : proposals[i]) {
+        for (auto val : proposals[problem_number]) {
             sstream << val << " ";
         }
         sstream << std::endl;
-
-        // After building the whole line in the stringstream, print it all at once:
         std::cout << sstream.str();
 
-        la->propose(proposals[i]);
-
-        // After returning from propose(), the decided set should have been logged already.
-        // If propose() is asynchronous, we'd have a different approach (e.g., a blocking wait),
-        // but let's assume it's blocking until decision is reached for simplicity.
+        la->propose(static_cast<int>(problem_number), proposals[problem_number]);
     }
 
     // Since we log immediately after each round, no need for a final flush here, but let's just ensure it:

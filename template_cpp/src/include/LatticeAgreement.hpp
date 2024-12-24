@@ -13,10 +13,10 @@
 
 class LatticeAgreement {
 public:
-    LatticeAgreement(BEB* beb, int myId, int n, int f, std::ofstream& logFile);
+    LatticeAgreement(BEB* beb, int myId, int n, int f, std::ofstream& logFile, unsigned int p);
 
     // Propose a set of integers. Blocks until a decision is reached.
-    void propose(const std::vector<int>& proposedValue);
+    void propose(int problem_number, const std::vector<int>& proposedValue);
 
     // Called by BEB when a message is delivered.
     void onMessageReceived(const sockaddr_in& senderAddr, const std::string& msg);
@@ -25,15 +25,15 @@ public:
 
 private:
     // Acceptor and Proposer handlers
-    void handleProposal(int senderId, int proposal_number, const std::vector<int>& proposedSet);
-    void handleAck(int proposal_number);
-    void handleNack(int proposal_number, const std::unordered_set<int>& acceptedSet);
+    void handleProposal(int senderId,int problem_number, int proposal_number, const std::vector<int>& proposedSet);
+    void handleAck(int problem_number,int proposal_number);
+    void handleNack(int problem_number,int proposal_number, const std::unordered_set<int>& acceptedSet);
 
     // Internal methods
     void decide(const std::unordered_set<int>& decidedValue);
     void sendProposal();
-    void sendAck(int proposal_number, int proposerId);
-    void sendNack(int proposal_number, int proposerId, const std::unordered_set<int>& acceptedSet);
+    void sendAck(int problem_number, int proposal_number, int proposerId);
+    void sendNack(int problem_number, int proposal_number, int proposerId, const std::unordered_set<int>& acceptedSet);
 
     // Set operations
     void unionSets(std::unordered_set<int>& baseSet, const std::vector<int>& toAdd);
@@ -47,10 +47,12 @@ private:
     int myId;
     int n;
     int f;
+    unsigned int p;
     std::ofstream& logFile;
 
     // Proposer state
     int active_proposal_number;
+    int current_problem_number;
     std::mutex mtxProposedValue;
     std::unordered_set<int> proposed_value;
     bool proposing;
@@ -65,9 +67,9 @@ private:
     std::condition_variable cv;
 
     // Acceptor state:
-    int current_proposal_number;            // highest proposal_number seen
     std::mutex mtxAcceptedValue;
-    std::unordered_set<int> accepted_value; // proposed_value for that proposal_number
+    // std::unordered_set<int> accepted_value; // proposed_value for that proposal_number
+    std::unordered_map<int, std::unordered_set<int>> accepted_values;
 
     std::vector<std::string> decidedLines; // Stores decided lines in memory
 };
