@@ -221,7 +221,7 @@ int main(int argc, char **argv) {
 
     // Initialize LatticeAgreement
     // Assume LatticeAgreement takes (BEB*, myId, n, f, logFile)
-    LatticeAgreement laInstance(&bebInstance, static_cast<int>(myId), n, f, logFile, p);
+    LatticeAgreement laInstance(&bebInstance, static_cast<int>(myId), n, f, logFile, p, ds);
     la = &laInstance;
 
     for (unsigned int problem_number = 0; problem_number < p; problem_number++) {

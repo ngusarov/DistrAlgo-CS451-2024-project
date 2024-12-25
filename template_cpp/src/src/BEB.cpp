@@ -68,7 +68,7 @@ void BEB::broadcastLoop() {
         }
 
         // Sleep to avoid flooding
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
         // If stopBroadcast() was called, runningBroadcast becomes false
         if (!runningBroadcast) break;

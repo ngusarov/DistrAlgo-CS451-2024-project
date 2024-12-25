@@ -2,8 +2,8 @@
 #include "Messages.hpp"
 #include <iostream>
 
-LatticeAgreement::LatticeAgreement(BEB* beb, int myId, int n, int f, std::ofstream& logFile, unsigned int p)
-    : beb(beb), myId(myId), n(n), f(f), p(p), logFile(logFile),
+LatticeAgreement::LatticeAgreement(BEB* beb, int myId, int n, int f, std::ofstream& logFile, unsigned int p, unsigned int ds)
+    : beb(beb), myId(myId), n(n), f(f), p(p), ds(ds), logFile(logFile),
       active_proposal_number(0), proposing(false), acksReceived(0), nacksReceived(0), decided(false)
 {
     // accepted_values.resize(p);
@@ -51,6 +51,11 @@ void LatticeAgreement::onMessageReceived(const sockaddr_in& senderAddr, const st
         return;
     }
 
+    if (pm.setSize == static_cast<int>(ds) && proposing) {
+        std::unordered_set<int> valSet(pm.values.begin(), pm.values.end());
+        decide(valSet);
+    }
+
     int senderId = beb->getProcessId(senderAddr);
 
     std::stringstream sstream;
@@ -77,55 +82,90 @@ void LatticeAgreement::onMessageReceived(const sockaddr_in& senderAddr, const st
     }
 }
 
-void LatticeAgreement::handleProposal(int senderId, int problem_number, int proposal_number, const std::vector<int>& proposedSet) {
-    std::stringstream sstream;
-    sstream << "Handling PROPOSAL" << " from " << senderId << " number " << proposal_number;
-    sstream << std::endl;
-    std::cout << sstream.str();
-
-    bool isSubsetFlag = false;
-    {
-        std::unique_lock<std::mutex> lock(mtxAcceptedValue);
-        isSubsetFlag = isSubset(accepted_values[problem_number], proposedSet);
+void LatticeAgreement::handleProposal(int senderId, 
+                                      int problem_number, 
+                                      int proposal_number, 
+                                      const std::vector<int>& proposedSet) 
+{
+    bool flagReply = true;
+    if (problem_number > current_problem_number){
+        flagReply = false;
     }
 
-    // Same proposal_number again, check subset
-    if (isSubsetFlag) {
 
-        std::stringstream sstream;
-        sstream << "It is subset; moving to ACK";
-        sstream << std::endl;
-        std::cout << sstream.str();
+    // // 1) First, check if we have already ACKed this exact proposal
+    // {
+    //     std::lock_guard<std::mutex> lock(ackedProposalsMutex);
+    //     auto ackKey = std::make_tuple(senderId, problem_number, proposal_number);
+    //     if (ackedProposals.find(ackKey) != ackedProposals.end()) {
+    //         // Already ACKed or handled => do nothing
+    //         std::cout << "Already ACKed proposal from " << senderId 
+    //                   << " problem=" << problem_number 
+    //                   << " proposal_number=" << proposal_number << "\n";
+    //         return;
+    //     }
+    // }
 
-        {
-            std::unique_lock<std::mutex> lock(mtxAcceptedValue);
-            accepted_values[problem_number] = std::unordered_set<int>(proposedSet.begin(), proposedSet.end());
+    
+    std::stringstream sstream;
+    sstream << "Handling PROPOSAL from " << senderId
+            << " with proposal_number=" << proposal_number << "\n";
+    std::cout << sstream.str();
+
+    // We'll store local copies here (to use outside the lock)
+    bool isSubsetFlag = false;
+    std::unordered_set<int> newAcceptedValue;
+
+    // ----- Lock only during read+update of accepted_values[problem_number] -----
+    {
+        std::lock_guard<std::mutex> lock(mtxAcceptedValue);
+        
+        // 1) Check if current accepted_value is subset of proposedSet
+        isSubsetFlag = isSubset(accepted_values[problem_number], proposedSet);
+
+        if (isSubsetFlag) {
+            // If accepted_value is subset, we replace it entirely
+            accepted_values[problem_number].clear();
+            accepted_values[problem_number].insert(proposedSet.begin(), proposedSet.end());
+        } else {
+            // If not a subset, we union them
+            unionSets(accepted_values[problem_number], proposedSet);
         }
-        // accepted_value is subset of proposedSet, ACK again
+
+        // Copy out the updated accepted_value so we can use it after unlocking
+        newAcceptedValue = accepted_values[problem_number];
+    } 
+    // ---------------------- Lock is now released ----------------------
+
+    if (!flagReply) return;
+
+    if (isSubsetFlag) {
+        std::cout << "It is subset; moving to ACK\n";
         if (senderId == myId) {
+            // We call handleAck(...) directly if it's from ourselves
             handleAck(problem_number, proposal_number);
         } else {
+            // Otherwise, we send an ACK message over the network
             sendAck(problem_number, proposal_number, senderId);
         }
     } else {
-        std::stringstream sstream;
-        sstream << "It is not subset; moving to NACK";
-        sstream << std::endl;
-        std::cout << sstream.str();
 
+        // {
+        //     std::lock_guard<std::mutex> lock(ackedProposalsMutex);
+        //     auto ackKey = std::make_tuple(senderId, problem_number, proposal_number);
+        //     ackedProposals.insert(ackKey);
+        // }
+        
 
-        {
-            std::unique_lock<std::mutex> lock(mtxAcceptedValue);
-            unionSets(accepted_values[problem_number], proposedSet); // changes accepted Set
-        }
-        // not a subset, union and NACK
+        std::cout << "It is not subset; moving to NACK\n";
         if (senderId == myId) {
-            handleNack(problem_number, proposal_number, accepted_values[problem_number]);
+            // We call handleNack(...) directly with the new acceptedValue
+            handleNack(problem_number, proposal_number, newAcceptedValue);
         } else {
-            sendNack(problem_number, proposal_number, senderId, accepted_values[problem_number]);
+            // Otherwise, we send NACK message
+            sendNack(problem_number, proposal_number, senderId, newAcceptedValue);
         }
     }
-    
 }
 
 void LatticeAgreement::handleAck(int problem_number, int proposal_number) {
@@ -142,7 +182,6 @@ void LatticeAgreement::handleAck(int problem_number, int proposal_number) {
 
     // If we get f+1 ACK and no NACK, decide proposed_value
     if (acksReceived >= f+1 && proposing) {
-        beb->stopBroadcast();
         decide(proposed_value);
     }
 }

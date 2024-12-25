@@ -7,13 +7,15 @@
 #include <fstream>
 #include <netinet/in.h>
 #include <sstream>
+#include <set>
+#include <tuple>
 
 #include "BEB.hpp"
 #include "Messages.hpp"
 
 class LatticeAgreement {
 public:
-    LatticeAgreement(BEB* beb, int myId, int n, int f, std::ofstream& logFile, unsigned int p);
+    LatticeAgreement(BEB* beb, int myId, int n, int f, std::ofstream& logFile, unsigned int p, unsigned int ds);
 
     // Propose a set of integers. Blocks until a decision is reached.
     void propose(int problem_number, const std::vector<int>& proposedValue);
@@ -48,6 +50,7 @@ private:
     int n;
     int f;
     unsigned int p;
+    unsigned int ds;
     std::ofstream& logFile;
 
     // Proposer state
@@ -72,4 +75,8 @@ private:
     std::unordered_map<int, std::unordered_set<int>> accepted_values;
 
     std::vector<std::string> decidedLines; // Stores decided lines in memory
+
+
+    std::mutex ackedProposalsMutex;
+    std::set<std::tuple<int, int, int>> ackedProposals;
 };

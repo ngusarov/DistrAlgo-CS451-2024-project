@@ -1,5 +1,6 @@
 #include "PerfectLinks.hpp"
 #include <iostream>
+#include <sstream>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -73,6 +74,10 @@ void PerfectLinks::reallySend(int processId, const std::string &msg) {
     }
     const sockaddr_in &destAddr = it->second;
 
+    // std::stringstream sstream;
+    // sstream << "[PL] sent: " << processId << " : " << msg << "\n";
+    // std::cout << sstream.str();
+
     ssize_t sent_bytes = sendto(sockfd, msg.c_str(), msg.size(), 0,
                                 reinterpret_cast<const struct sockaddr*>(&destAddr),
                                 sizeof(destAddr));
@@ -99,10 +104,10 @@ void PerfectLinks::sendLargeProposalOrNack(int processId, const ParsedMessage& p
         // Rebuild a message string
         std::string subMsg;
         if (pm.type == MessageType::PROPOSAL) {
-            subMsg = serializeProposal(pm.problem_number, pm.proposal_number, subVec);
+            subMsg = serializeSubProposal(pm.problem_number, pm.proposal_number, total, subVec);
         } else {
             // NACK
-            subMsg = serializeNack(pm.problem_number, pm.proposal_number, subVec);
+            subMsg = serializeSubNack(pm.problem_number, pm.proposal_number, total, subVec);
         }
 
         reallySend(processId, subMsg);
@@ -123,7 +128,7 @@ void PerfectLinks::receiverLoop() {
                                reinterpret_cast<struct sockaddr*>(&srcAddr),
                                &srcAddrLen);
         if (len < 0) {
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            std::this_thread::sleep_for(std::chrono::nanoseconds(10));
             continue;
         }
         buffer[len] = '\0';
@@ -137,6 +142,8 @@ void PerfectLinks::receiverLoop() {
 static std::function<void(const sockaddr_in&, const std::string&)> noCallback = nullptr;
 
 void PerfectLinks::handleIncoming(const sockaddr_in& srcAddr, const std::string& packet) {
+
+
     ParsedMessage pm = parseMessage(packet);
     if (pm.type == MessageType::UNKNOWN) {
         // unknown format, ignore
@@ -156,6 +163,10 @@ void PerfectLinks::handleIncoming(const sockaddr_in& srcAddr, const std::string&
         return;
     }
 
+    // std::stringstream sstream;
+    // sstream << "[PL] received: " << senderId << " : " << packet << "\n";
+    // std::cout << sstream.str();
+
     FragKey key{senderId, pm.type, pm.problem_number, pm.proposal_number};
 
     {
@@ -170,6 +181,10 @@ void PerfectLinks::handleIncoming(const sockaddr_in& srcAddr, const std::string&
         for (int val : pm.values) {
             frag.elements.insert(val);
         }
+
+        // std::stringstream sstream;
+        // sstream << "Current fragment: " << static_cast<int>(pm.values.size()) << " out of " << frag.setSize << "\n";
+        // std::cout << sstream.str();
 
         // If we have enough elements, produce final message
         if (static_cast<int>(frag.elements.size()) >= frag.setSize) {

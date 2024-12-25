@@ -13,6 +13,16 @@ std::string serializeProposal(int problem_number, int proposal_number, const std
     return oss.str();
 }
 
+std::string serializeSubProposal(int problem_number, int proposal_number, int size, const std::vector<int>& values) {
+    // Format: P:<proposal_number>:<setSize>:<elem1>:...:<elemN>
+    std::ostringstream oss;
+    oss << "P:" << problem_number << ":" << proposal_number << ":" << size;
+    for (int val : values) {
+        oss << ":" << val;
+    }
+    return oss.str();
+}
+
 std::string serializeAck(int problem_number,int proposal_number) {
     // Format: A:<proposal_number>
     std::ostringstream oss;
@@ -24,6 +34,16 @@ std::string serializeNack(int problem_number,int proposal_number, const std::vec
     // Format: N:<proposal_number>:<setSize>:<elem1>:...:<elemM>
     std::ostringstream oss;
     oss << "N:"<< problem_number << ":" << proposal_number << ":" << accepted_values.size();
+    for (int val : accepted_values) {
+        oss << ":" << val;
+    }
+    return oss.str();
+}
+
+std::string serializeSubNack(int problem_number,int proposal_number, int size, const std::vector<int>& accepted_values) {
+    // Format: N:<proposal_number>:<setSize>:<elem1>:...:<elemM>
+    std::ostringstream oss;
+    oss << "N:"<< problem_number << ":" << proposal_number << ":" << size;
     for (int val : accepted_values) {
         oss << ":" << val;
     }
@@ -64,9 +84,8 @@ ParsedMessage parseMessage(const std::string& msg) {
             pm.proposal_number = std::stoi(parts[2]);
             pm.setSize = std::stoi(parts[3]);
             int expectedSize = 4 + pm.setSize;
-            if (static_cast<int>(parts.size()) < expectedSize) return pm; // Not enough elements
-            for (int i = 0; i < pm.setSize; i++) {
-                pm.values.push_back(std::stoi(parts[static_cast<size_t>(4 + i)]));
+            for (size_t i = 4; i < parts.size(); i++) {
+                pm.values.push_back(std::stoi(parts[i]));
             }
             break;
         }
@@ -87,9 +106,8 @@ ParsedMessage parseMessage(const std::string& msg) {
             pm.proposal_number = std::stoi(parts[2]);
             pm.setSize = std::stoi(parts[3]);
             int expectedSize = 4 + pm.setSize;
-            if (static_cast<int>(parts.size()) < expectedSize) return pm;
-            for (int i = 0; i < pm.setSize; i++) {
-                pm.values.push_back(std::stoi(parts[static_cast<size_t>(4 + i)]));
+            for (size_t i = 4; i < parts.size(); i++) {
+                pm.values.push_back(std::stoi(parts[i]));
             }
             break;
         }

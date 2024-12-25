@@ -17,5 +17,8 @@ std::string serializeProposal(int problem_number, int proposal_number, const std
 std::string serializeAck(int problem_number, int proposal_number);
 std::string serializeNack(int problem_number, int proposal_number, const std::vector<int>& accepted_values);
 
+std::string serializeSubProposal(int problem_number, int proposal_number, int size, const std::vector<int>& values);
+std::string serializeSubNack(int problem_number,int proposal_number, int size, const std::vector<int>& accepted_values);
+
 // Parse function
 ParsedMessage parseMessage(const std::string& msg);
