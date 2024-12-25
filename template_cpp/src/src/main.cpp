@@ -207,7 +207,7 @@ int main(int argc, char **argv) {
     // Number of processes
     int n = static_cast<int>(processIds.size());
     // Compute f if needed (assuming n=2f+1, or any other formula required by LA)
-    int f = (n - 1) / 2;
+    int f = (n + 1) / 2;
 
     std::cout << "Number of processes: " << n << "; Half " << f << std::endl;
 

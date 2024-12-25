@@ -180,8 +180,8 @@ void LatticeAgreement::handleAck(int problem_number, int proposal_number) {
     sstream << std::endl;
     std::cout << sstream.str();
 
-    // If we get f+1 ACK and no NACK, decide proposed_value
-    if (acksReceived >= f+1 && proposing) {
+    // If we get f ACK and no NACK, decide proposed_value
+    if (acksReceived >= f && proposing) {
         decide(proposed_value);
     }
 }
@@ -211,7 +211,7 @@ void LatticeAgreement::handleNack(int problem_number, int proposal_number, const
     sstream << std::endl;
     std::cout << sstream.str();
 
-    if (nacksReceived > 0 && acksReceived+nacksReceived >= f+1 && proposing) {
+    if (nacksReceived > 0 && acksReceived+nacksReceived >= f && proposing) {
         active_proposal_number++;
         acksReceived = 0;
         nacksReceived = 0;
